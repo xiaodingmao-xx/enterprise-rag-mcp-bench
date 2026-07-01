@@ -1,7 +1,17 @@
-"""
-Evaluation Module.
+"""Evaluation module for batch quality assessment and IR metrics."""
 
-This package contains evaluation runner and related utilities.
-"""
+from src.observability.evaluation.ir_metrics import (
+    evaluate_ranking_at_k,
+    mrr_at_k,
+    ndcg_at_k,
+    precision_at_k,
+    recall_at_k,
+)
 
-__all__ = []
+__all__ = [
+    "evaluate_ranking_at_k",
+    "mrr_at_k",
+    "ndcg_at_k",
+    "precision_at_k",
+    "recall_at_k",
+]

@@ -137,6 +137,16 @@ vision_llm:
 
 真实 API Key 请放在本机 `.env` 或系统环境变量中，不要写入仓库。当前默认配置里的 `llm.api_key`、`embedding.api_key`、`vision_llm.api_key` 都会从环境变量读取。
 
+### 4. 消融评估（Ablation Evaluation）
+
+项目提供 `scripts/run_ablation_eval.py` 对比四种检索模式：`dense`、`bm25`、`hybrid`、`hybrid_rerank`。脚本会读取 golden test set，计算 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，并将结果保存到 `eval/results/{timestamp}.json`。
+
+```bash
+python scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --top-k 10 --collection default --markdown
+```
+
+默认数据集是 `tests/fixtures/golden_test_set.json`。测试集中可以用 `expected_chunk_ids` 做 chunk 级评估，也可以用 `expected_sources` 做来源文档级评估；未标注相关文档的 query 会被跳过，不参与聚合指标。
+
 ---
 
 ## 🎯 谁适合用这个项目 & 怎么用

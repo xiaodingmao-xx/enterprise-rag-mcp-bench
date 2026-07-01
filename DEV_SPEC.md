@@ -590,6 +590,11 @@ MCP 协议的 Tool 返回格式支持多种内容类型（`content` 数组），
 	- 评估模块设计为**组合模式**，可同时挂载多个 Evaluator，生成综合报告。
 	- 配置示例：`evaluation.backends: [ragas, custom_metrics]`，系统并行执行并汇总结果。
 
+- **消融评估 (Ablation Evaluation)**：
+	- 提供 `scripts/run_ablation_eval.py`，统一对比 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式。
+	- 指标模块 `src/observability/evaluation/ir_metrics.py` 实现 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，以 pure function 形式提供，便于单元测试和复用。
+	- 评估结果保存到 `eval/results/{timestamp}.json`，可通过 `--markdown` 额外输出 Markdown 表格，便于实验记录与面试讲解。
+
 #### 3.3.5 配置管理与切换流程
 
 - **配置文件结构示例** (`config/settings.yaml`)：
@@ -1560,6 +1565,7 @@ smart-knowledge-hub/
 │       └── evaluation/                  # 评估模块
 │           ├── __init__.py
 │           ├── eval_runner.py           # 评估执行器
+│           ├── ir_metrics.py            # IR 指标 (Recall@K/Precision@K/MRR@K/NDCG@K)
 │           ├── ragas_evaluator.py       # Ragas 评估实现
 │           └── composite_evaluator.py   # 组合评估器 (多后端并行)
 
@@ -1590,11 +1596,15 @@ smart-knowledge-hub/
 │   ├── traces.jsonl                     # 追踪日志 (JSON Lines)
 │   └── app.log                          # 应用日志
 │
+├── eval/                                # 离线评估输出目录
+│   └── results/                         # Ablation JSON/Markdown 结果
+│
 ├── tests/                               # 测试目录
 │   ├── unit/                            # 单元测试
 │   │   ├── test_dense_retriever.py      # D2: 稠密检索器测试
 │   │   ├── test_sparse_retriever.py     # D3: 稀疏检索器测试
 │   │   ├── test_fusion_rrf.py           # D4: RRF 融合测试
+│   │   ├── test_ir_metrics.py           # IR 指标测试
 │   │   ├── test_reranker_fallback.py    # D6: Reranker 回退测试
 │   │   ├── test_protocol_handler.py     # E2: 协议处理器测试
 │   │   ├── test_response_builder.py     # E3: 响应构建器测试
@@ -1619,6 +1629,7 @@ smart-knowledge-hub/
 │   ├── ingest.py                        # 数据摄取脚本（离线摄取入口）
 │   ├── query.py                         # 查询测试脚本（在线查询入口）
 │   ├── evaluate.py                      # 评估运行脚本
+│   ├── run_ablation_eval.py             # 消融评估脚本 (dense/bm25/hybrid/hybrid_rerank)
 │   └── start_dashboard.py               # Dashboard 启动脚本
 │
 ├── main.py                              # MCP Server 启动入口
@@ -1662,6 +1673,7 @@ smart-knowledge-hub/
 | `ingest.py` | 离线数据摄取入口 | CLI 参数解析，调用 Ingestion Pipeline，支持 `--collection`/`--path`/`--force` |
 | `query.py` | 在线查询测试入口 | CLI 参数解析，调用 HybridSearch + Reranker，支持 `--query`/`--top-k`/`--verbose` |
 | `evaluate.py` | 评估运行入口 | 加载 golden_test_set，运行评估，输出 metrics |
+| `run_ablation_eval.py` | 消融评估入口 | 对比 dense/bm25/hybrid/hybrid_rerank，输出 JSON 与可选 Markdown 表格 |
 | `start_dashboard.py` | Dashboard 启动入口 | Streamlit 应用启动 |
 
 #### 5.3.4 Ingestion Pipeline 层
@@ -1712,6 +1724,7 @@ smart-knowledge-hub/
 | `dashboard/services/data_service.py` | 数据浏览服务 | 封装 ChromaStore/ImageStorage 读取 |
 | `dashboard/services/config_service.py` | 配置读取服务 | 封装 Settings 展示 |
 | `evaluation/eval_runner.py` | 评估执行 | 黄金测试集，指标计算，报告生成 |
+| `evaluation/ir_metrics.py` | IR 指标计算 | Recall@K、Precision@K、MRR@K、NDCG@K，去重后按 Top-K 计算 |
 | `evaluation/ragas_evaluator.py` | Ragas 评估 | Faithfulness, Answer Relevancy, Context Precision |
 | `evaluation/composite_evaluator.py` | 组合评估器 | 多后端并行执行，结果汇总 |
 
@@ -3094,6 +3107,30 @@ dashboard:
   ```
 - **验收标准**：`python scripts/evaluate.py` 可运行，输出 metrics。
 - **测试方法**：`pytest -q tests/integration/test_hybrid_search.py` 或 `python scripts/evaluate.py`。
+
+### H3.5 / Task 4：Ablation Evaluation
+- **目标**：新增消融评估脚本，对比 dense、bm25、hybrid、hybrid_rerank 四种检索模式，量化不同召回/精排策略对 IR 指标的影响。
+- **前置依赖**：D2（DenseRetriever）、D3（SparseRetriever）、D5（HybridSearch）、D6（Reranker）、H3（Golden Test Set）。
+- **修改文件**：
+  - `scripts/run_ablation_eval.py`（新增：消融评估 CLI）
+  - `src/observability/evaluation/ir_metrics.py`（新增：IR 指标纯函数）
+  - `tests/unit/test_ir_metrics.py`（新增：指标单元测试）
+  - `README.md`、`DEV_SPEC.md`（补充说明）
+- **实现类/函数**：
+  - `recall_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `precision_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `mrr_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `ndcg_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `evaluate_ranking_at_k(...) -> dict[str, float]`
+  - `scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --top-k 10 --markdown`
+- **输出格式**：
+  - JSON：保存到 `eval/results/{timestamp}.json`，包含运行配置、每个 mode 的聚合指标、逐 query 检索结果与耗时。
+  - Markdown：开启 `--markdown` 时输出同名 `.md` 表格，并打印到终端。
+- **验收标准**：
+  - 四种模式均可通过 CLI 选择运行。
+  - 支持 `expected_chunk_ids` 的 chunk 级评估，以及 `expected_sources` 的来源级评估。
+  - 未标注相关文档的 query 标记为 skipped，不参与聚合指标。
+- **测试方法**：`pytest -q tests/unit/test_ir_metrics.py`，并执行 `python -m py_compile scripts/run_ablation_eval.py src/observability/evaluation/ir_metrics.py`。
 
 ### H4：评估面板页面
 - **目标**：实现 Dashboard 评估面板页面（运行评估、查看指标、历史对比）。
