@@ -1,0 +1,144 @@
+# Modular RAG MCP Server - Configuration
+# This is the main configuration file for the MCP Server.
+# Edit this file to configure LLM, Embedding, VectorStore, and other services.
+
+# =============================================================================
+# LLM Configuration
+# =============================================================================
+llm:
+  provider: "openai"  # Options: openai, azure, ollama, deepseek
+  model: "qwen3.7-plus"
+  deployment_name: "qwen3.7-plus"
+  # azure_endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  api_version: "2024-02-15-preview"
+  base_url: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  api_key: "${LLM_API_KEY:-}"
+  temperature: 0.0
+  max_tokens: 4096
+
+  # provider: "deepseek"  # Options: openai, azure, ollama, deepseek
+  # model: "deepseek-v4-flash"
+  # deployment_name: "deepseek-v4-flash"
+  # # azure_endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  # api_version: "2024-02-15-preview"
+  # base_url: "	https://api.deepseek.com"
+  # api_key: "${DEEPSEEK_API_KEY:-}"
+  # temperature: 0.0
+  # max_tokens: 4096
+
+# =============================================================================
+# Embedding Configuration
+# =============================================================================
+embedding:
+  provider: "openai"  # Options: openai, azure, ollama
+  model: "text-embedding-v4"
+  dimensions: 1536  # text-embedding-ada-002 固定维度 (不传递给API, 仅用于验证)
+  # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
+  # azure_endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  # deployment_name: "text-embedding-v4"
+  # api_version: "2024-02-15-preview"
+  base_url: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  api_key: "${EMBEDDING_API_KEY:-}"
+  # OpenAI-specific settings (if provider is openai):
+  # api_key: "${OPENAI_API_KEY:-}"
+
+# =============================================================================
+# Vision LLM Configuration (for Image Captioning)
+# =============================================================================
+vision_llm:
+  enabled: true  # Set to true to enable vision capabilities
+  provider: "openai"  # Options: openai, azure, ollama
+  model: "qwen3-vl-plus"  # Options: gpt-4o, gpt-4-vision-preview (OpenAI), llava (Ollama)
+  # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
+  base_url: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  # azure_endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/api/v1"
+  # deployment_name: "qwen-image-2.0-pro-2026-04-22"
+  # api_version: "2024-02-15-preview"
+  api_key: "${VISION_LLM_API_KEY:-}"
+  # Ollama-specific settings (if provider is ollama):
+  # base_url: "http://localhost:11434"
+  max_image_size: 2048  # Max dimension (width/height) for image compression
+
+# =============================================================================
+# Vector Store Configuration
+# =============================================================================
+vector_store:
+  provider: "chroma"  # Options: chroma, qdrant, pinecone
+  persist_directory: "./data/db/chroma"
+  collection_name: "knowledge_hub"
+
+# =============================================================================
+# Retrieval Configuration
+# =============================================================================
+retrieval:
+  dense_top_k: 20
+  sparse_top_k: 20
+  fusion_top_k: 10
+  rrf_k: 60  # RRF constant
+
+# =============================================================================
+# Rerank Configuration
+# =============================================================================
+rerank:
+  enabled: false
+  provider: "none"  # Options: none, cross_encoder, llm
+  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  top_k: 5
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  enabled: false
+  provider: "custom"  # Options: ragas, deepeval, custom
+  metrics:
+    - "hit_rate"
+    - "mrr"
+    - "faithfulness"
+
+# =============================================================================
+# Observability Configuration
+# =============================================================================
+observability:
+  log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  trace_enabled: true
+  trace_file: "./logs/traces.jsonl"
+  structured_logging: true
+
+# =============================================================================
+# Performance Configuration
+# =============================================================================
+performance:
+  query_cache:
+    enabled: true
+    max_size: 128
+    ttl_seconds: 300
+  embedding_cache:
+    enabled: true
+    db_path: "./data/db/embedding_cache.db"
+
+# =============================================================================
+# Ingestion Configuration
+# =============================================================================
+ingestion:
+  chunk_size: 1000
+  chunk_overlap: 200
+  splitter: "recursive"  # Options: recursive, semantic, fixed_length
+  batch_size: 20
+
+  # Document Quality Gate
+  document_quality:
+    enabled: true
+    sample_pages: 3
+    min_effective_char_ratio: 0.8
+    min_recognizable_text_density: 20
+  
+  # Chunk Refiner Configuration (C5)
+  chunk_refiner:
+    use_llm: true  # Set to true to enable LLM-based refinement (requires LLM config)
+    # When use_llm is false or LLM call fails, falls back to rule-based refinement
+  
+  # Metadata Enricher Configuration (C6)
+  metadata_enricher:
+    use_llm: true  # Set to true to enable LLM-based enrichment (requires LLM config)
+    # When use_llm is false or LLM call fails, falls back to rule-based enrichment
