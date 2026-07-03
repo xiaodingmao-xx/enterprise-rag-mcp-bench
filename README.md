@@ -39,7 +39,7 @@
 
 | 模块 | 能力 | 说明 |
 |------|------|------|
-| **Ingestion Pipeline** | 多格式文档 → Chunk → Transform → Embedding → Upsert | 支持 PDF / Markdown / TXT / HTML / DOCX / 代码文件摄取，PDF 保留多模态图片描述（Image Captioning） |
+| **Ingestion Pipeline** | 多格式文档 → Chunk → Transform → Embedding → Upsert | 支持 PDF / Markdown / TXT / HTML / DOCX / 代码文件摄取，注入结构化 metadata，PDF 保留多模态图片描述（Image Captioning） |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
 | **MCP Server** | 标准 MCP 协议暴露 Tools | `query_knowledge_hub`、`list_collections`、`get_document_summary` |
 | **Dashboard** | Streamlit 六页面管理平台 | 系统总览 / 数据浏览 / Ingestion 管理 / 摄取追踪 / 查询追踪 / 评估面板 |
@@ -150,7 +150,29 @@ python scripts/ingest.py --path documents/guide.md --collection knowledge_base -
 
 `.doc` 这类旧版 Office 二进制格式暂不默认支持，建议先转换为 `.docx` 后再摄取。
 
-### 5. 消融评估（Ablation Evaluation）
+### 5. 结构化 Metadata Enrichment
+
+Ingestion 阶段会为每个 chunk 注入结构化 metadata，包含 `title`、`summary`、`tags`、`section_path`、`heading_path`、`page_range`、`table_ids`、`image_ids`、`entities`、`questions`、`enrichment_method` 和 `enrichment_cached`。默认走规则抽取，不依赖 LLM；开启 LLM 后会使用 JSON Prompt 生成增强结果，解析失败或预算超限时自动回退到规则结果。
+
+```yaml
+ingestion:
+  metadata_enrichment:
+    enabled: true
+    use_llm: false
+    cache_enabled: true
+    cache_path: "./data/cache/metadata_enrichment_cache.sqlite"
+    max_tokens_per_chunk: 1200
+    max_concurrency: 3
+    budget_usd_per_run: 2.0
+    output_schema: "json"
+    fallback_to_rule_based: true
+    generate_questions: true
+    extract_entities: true
+```
+
+`ingestion.metadata_enrichment` 是新的推荐配置块；旧的 `ingestion.metadata_enricher` 仍保留兼容。缓存默认使用 SQLite，重复 chunk 会直接复用 enrichment 结果，减少 LLM 调用和重复规则计算。
+
+### 6. 消融评估（Ablation Evaluation）
 
 项目提供 `scripts/run_ablation_eval.py` 对比四种检索模式：`dense`、`bm25`、`hybrid`、`hybrid_rerank`。脚本会读取 golden test set，计算 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，并将结果保存到 `eval/results/{timestamp}.json`。
 
@@ -160,7 +182,7 @@ python scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --to
 
 默认数据集是 `tests/fixtures/golden_test_set.json`。测试集中可以用 `expected_chunk_ids` 做 chunk 级评估，也可以用 `expected_sources` 做来源文档级评估；未标注相关文档的 query 会被跳过，不参与聚合指标。
 
-### 6. 多模态文档评测（MMDocRAG Evaluation）
+### 7. 多模态文档评测（MMDocRAG Evaluation）
 
 项目新增 `scripts/run_mmdocrag_eval.py`，用于评估多模态文档 RAG 场景。它复用 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式，并额外计算多模态能力、答案质量、引用可靠性和延迟指标：
 

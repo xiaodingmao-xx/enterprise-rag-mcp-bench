@@ -148,7 +148,24 @@ ingestion:
     use_llm: true  # Set to true to enable LLM-based refinement (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based refinement
   
-  # Metadata Enricher Configuration (C6)
+  # Structured Metadata Enrichment Configuration (C6)
+  # New configuration block. Takes precedence over legacy metadata_enricher.
+  metadata_enrichment:
+    enabled: true
+    use_llm: false
+    cache_enabled: true
+    cache_path: "./data/cache/metadata_enrichment_cache.sqlite"
+    max_tokens_per_chunk: 1200
+    max_concurrency: 3
+    budget_usd_per_run: 2.0
+    estimated_cost_per_1k_tokens: 0.0005
+    output_schema: "json"
+    fallback_to_rule_based: true
+    generate_questions: true
+    extract_entities: true
+    prompt_path: "config/prompts/metadata_enrichment_json.txt"
+
+  # Legacy Metadata Enricher Configuration (kept for backward compatibility)
   metadata_enricher:
     use_llm: true  # Set to true to enable LLM-based enrichment (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based enrichment

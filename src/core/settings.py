@@ -228,6 +228,7 @@ class IngestionSettings:
     batch_size: int
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
+    metadata_enrichment: Optional[Dict[str, Any]] = None  # 结构化元数据增强配置
     document_quality: Optional[Dict[str, Any]] = None
     supported_extensions: List[str] = field(
         default_factory=lambda: DEFAULT_SUPPORTED_EXTENSIONS.copy()
@@ -289,6 +290,7 @@ class Settings:
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
+                metadata_enrichment=ingestion.get("metadata_enrichment"),  # 可选配置
                 document_quality=ingestion.get("document_quality"),
                 supported_extensions=_normalise_extensions(
                     ingestion.get("supported_extensions"),
@@ -301,6 +303,11 @@ class Settings:
                 ingestion_settings,
                 "metadata_enricher",
                 ingestion.get("metadata_enricher"),
+            )
+            object.__setattr__(
+                ingestion_settings,
+                "metadata_enrichment",
+                ingestion.get("metadata_enrichment"),
             )
             object.__setattr__(
                 ingestion_settings,

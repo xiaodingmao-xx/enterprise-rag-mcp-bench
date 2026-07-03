@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 DEFAULT_MAX_WORKERS = 5
 
 
-class MetadataEnricher(BaseTransform):
+class _LegacyMetadataEnricher(BaseTransform):
     """Enriches chunk metadata with title, summary, and tags.
     
     Processing Pipeline:
@@ -576,3 +576,669 @@ class MetadataEnricher(BaseTransform):
             metadata['summary'] = response[:500]  # Fallback to raw response
         
         return metadata
+
+
+# ============================================================================
+# Structured metadata enrichment implementation
+# ============================================================================
+
+import threading
+
+from src.ingestion.transform.entity_extractor import extract_entities
+from src.ingestion.transform.metadata_cache import (
+    MetadataEnrichmentCache,
+    build_cache_key,
+    sha256_text,
+    stable_config_hash,
+)
+from src.ingestion.transform.metadata_schema import (
+    MetadataEnrichmentConfig,
+    add_text_companions,
+    build_metadata_enrichment_config,
+    extract_json_object,
+    normalise_page_range,
+    normalise_string_list,
+    truncate_string,
+    validate_enrichment_metadata,
+)
+from src.ingestion.transform.question_generator import generate_rule_based_questions
+
+
+class MetadataEnricher(BaseTransform):
+    """Structured metadata enrichment with rule, optional LLM, cache, and budget.
+
+    The public class keeps the same import path as the legacy implementation and
+    preserves ``enriched_by`` for backward compatibility. New structured fields
+    use ``enrichment_*`` names and include Chroma-friendly ``*_text`` companions.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        llm: Optional[BaseLLM] = None,
+        prompt_path: Optional[str] = None,
+        cache: Optional[MetadataEnrichmentCache] = None,
+    ) -> None:
+        self.settings = settings
+        self.config = self._load_config(settings)
+        if prompt_path is not None:
+            self.config = MetadataEnrichmentConfig(
+                **{**self.config.__dict__, "prompt_path": prompt_path}
+            )
+        self._llm = llm
+        self._prompt_template: Optional[str] = None
+        self._prompt_path = str(resolve_path(self.config.prompt_path))
+        self.use_llm = bool(self.config.enabled and self.config.use_llm)
+        self.max_concurrency = max(1, int(self.config.max_concurrency))
+
+        self._cache = cache
+        if self._cache is None and self.config.cache_enabled:
+            self._cache = MetadataEnrichmentCache(self.config.cache_path)
+
+        self._config_hash = stable_config_hash(self.config.cache_relevant_dict())
+        self._budget_lock = threading.Lock()
+        self._estimated_spend_usd = 0.0
+        self._llm_call_count = 0
+        self._budget_fallback_count = 0
+        self._llm_fallback_count = 0
+
+    @staticmethod
+    def _load_config(settings: Settings) -> MetadataEnrichmentConfig:
+        raw: dict[str, Any] = {}
+        ingestion = getattr(settings, "ingestion", None)
+        if ingestion is not None:
+            if isinstance(ingestion, dict):
+                new_config = ingestion.get("metadata_enrichment")
+                legacy_config = ingestion.get("metadata_enricher")
+            else:
+                new_config = getattr(ingestion, "metadata_enrichment", None)
+                legacy_config = getattr(ingestion, "metadata_enricher", None)
+            if isinstance(new_config, dict):
+                raw = new_config
+            elif isinstance(legacy_config, dict):
+                raw = {"cache_enabled": False, **legacy_config}
+        return build_metadata_enrichment_config(raw if isinstance(raw, dict) else {})
+
+    @property
+    def llm(self) -> Optional[BaseLLM]:
+        """Lazy-load LLM instance when LLM enrichment is enabled."""
+
+        if self.use_llm and self._llm is None:
+            try:
+                self._llm = LLMFactory.create(self.settings)
+                logger.info("LLM initialized for metadata enrichment")
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to initialize LLM for metadata enrichment: {exc}. "
+                    "Falling back to rule-based enrichment."
+                )
+                self.use_llm = False
+        return self._llm
+
+    def transform(
+        self,
+        chunks: List[Chunk],
+        trace: Optional[TraceContext] = None,
+    ) -> List[Chunk]:
+        """Enrich chunks while isolating per-chunk failures."""
+
+        if not chunks:
+            return []
+        if not self.config.enabled:
+            return chunks
+
+        if self.use_llm and self.llm:
+            enriched = self._transform_parallel(chunks, trace)
+        else:
+            enriched = self._transform_sequential(chunks, trace)
+
+        self._record_trace(chunks, enriched, trace, parallel=bool(self.use_llm and self.llm))
+        logger.info(
+            "Metadata enrichment complete: chunks=%d, llm_calls=%d, "
+            "estimated_cost=%.6f, budget_fallbacks=%d, llm_fallbacks=%d",
+            len(chunks),
+            self._llm_call_count,
+            self._estimated_spend_usd,
+            self._budget_fallback_count,
+            self._llm_fallback_count,
+        )
+        return enriched
+
+    def _transform_parallel(
+        self,
+        chunks: List[Chunk],
+        trace: Optional[TraceContext],
+    ) -> List[Chunk]:
+        max_workers = min(self.max_concurrency, len(chunks))
+        results: list[Optional[Chunk]] = [None] * len(chunks)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {
+                executor.submit(self._enrich_single_chunk, chunk, trace): index
+                for index, chunk in enumerate(chunks)
+            }
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    results[index] = future.result()
+                except Exception as exc:
+                    logger.warning(f"Metadata enrichment worker failed: {exc}")
+                    results[index] = self._fallback_chunk(chunks[index], str(exc))
+        return [result if result is not None else chunks[index] for index, result in enumerate(results)]
+
+    def _transform_sequential(
+        self,
+        chunks: List[Chunk],
+        trace: Optional[TraceContext],
+    ) -> List[Chunk]:
+        return [self._enrich_single_chunk(chunk, trace) for chunk in chunks]
+
+    def _enrich_single_chunk(
+        self,
+        chunk: Chunk,
+        trace: Optional[TraceContext] = None,
+    ) -> Chunk:
+        try:
+            rule_metadata = self._rule_based_enrich(chunk)
+            cached = self._read_cache(chunk)
+            if cached is not None:
+                cached["enrichment_cached"] = True
+                return self._build_chunk(chunk, cached)
+
+            enrichment = rule_metadata
+            fallback_reason: Optional[str] = None
+
+            if self.use_llm and self.llm:
+                can_call, budget_cost = self._reserve_budget(chunk.text or "")
+                if can_call:
+                    llm_metadata, input_truncated = self._llm_enrich(
+                        chunk.text or "",
+                        rule_metadata,
+                        trace,
+                    )
+                    if llm_metadata is not None:
+                        enrichment = self._merge_rule_and_llm(
+                            rule_metadata,
+                            llm_metadata,
+                            input_truncated=input_truncated,
+                        )
+                    else:
+                        self._llm_fallback_count += 1
+                        fallback_reason = "llm_failed"
+                        enrichment = dict(rule_metadata)
+                        enrichment["enrichment_method"] = "fallback"
+                else:
+                    self._budget_fallback_count += 1
+                    fallback_reason = "budget_exceeded"
+                    enrichment = dict(rule_metadata)
+                    enrichment["enrichment_budget_exceeded"] = True
+                    enrichment["estimated_llm_cost_usd"] = round(budget_cost, 8)
+
+            if fallback_reason:
+                enrichment["fallback_reason"] = fallback_reason
+                enrichment["enrich_fallback_reason"] = fallback_reason
+
+            enrichment["enrichment_cached"] = False
+            self._write_cache(chunk, enrichment)
+            return self._build_chunk(chunk, enrichment)
+        except Exception as exc:
+            logger.warning(f"Failed to enrich chunk {getattr(chunk, 'id', '')}: {exc}")
+            return self._fallback_chunk(chunk, str(exc))
+
+    def _build_chunk(self, chunk: Chunk, enrichment: Dict[str, Any]) -> Chunk:
+        method = enrichment.get("enrichment_method", "rule_based")
+        enriched_by = "llm" if method in {"llm", "hybrid"} else "rule"
+        if method == "fallback":
+            enriched_by = "rule"
+        if enrichment.get("_enriched_by_override"):
+            enriched_by = str(enrichment["_enriched_by_override"])
+
+        public_enrichment = {
+            key: value for key, value in add_text_companions(enrichment).items()
+            if not key.startswith("_")
+        }
+        final_metadata = {
+            **(chunk.metadata or {}),
+            **public_enrichment,
+            "enriched_by": enriched_by,
+        }
+        return Chunk(
+            id=chunk.id,
+            text=chunk.text or "",
+            metadata=final_metadata,
+            start_offset=chunk.start_offset,
+            end_offset=chunk.end_offset,
+            source_ref=chunk.source_ref,
+        )
+
+    def _fallback_chunk(self, chunk: Chunk, reason: str) -> Chunk:
+        text = chunk.text or ""
+        try:
+            metadata = self._rule_based_enrich(chunk)
+        except Exception:
+            metadata = validate_enrichment_metadata(
+                {
+                    "title": "Untitled",
+                    "summary": truncate_string(text, 240),
+                    "tags": [],
+                    "enrichment_method": "fallback",
+                    "fallback_reason": reason,
+                }
+            )
+        metadata["enrichment_method"] = "fallback"
+        metadata["fallback_reason"] = reason
+        metadata["enrich_error"] = reason
+        if chunk.text is None:
+            metadata["_enriched_by_override"] = "error"
+        metadata["enrichment_cached"] = False
+        return self._build_chunk(chunk, metadata)
+
+    def _cache_identity(self, chunk: Chunk) -> tuple[str, str, str]:
+        text_hash = sha256_text(chunk.text or "")
+        cache_key = build_cache_key(chunk.id, text_hash, self._config_hash)
+        return cache_key, text_hash, self._config_hash
+
+    def _read_cache(self, chunk: Chunk) -> Optional[dict[str, Any]]:
+        if not self.config.cache_enabled or self._cache is None:
+            return None
+        cache_key, _, _ = self._cache_identity(chunk)
+        cached = self._cache.get(cache_key)
+        if cached is None:
+            return None
+        return validate_enrichment_metadata(cached)
+
+    def _write_cache(self, chunk: Chunk, enrichment: dict[str, Any]) -> None:
+        if not self.config.cache_enabled or self._cache is None:
+            return
+        cache_key, text_hash, config_hash = self._cache_identity(chunk)
+        to_store = dict(enrichment)
+        to_store["enrichment_cached"] = False
+        self._cache.set(
+            cache_key=cache_key,
+            chunk_id=chunk.id,
+            text_hash=text_hash,
+            config_hash=config_hash,
+            enrichment_result=to_store,
+        )
+
+    def _reserve_budget(self, text: str) -> tuple[bool, float]:
+        estimated_tokens = self._estimate_tokens(text) + 512
+        estimated_cost = (
+            estimated_tokens / 1000.0 * self.config.estimated_cost_per_1k_tokens
+        )
+        with self._budget_lock:
+            if self._estimated_spend_usd + estimated_cost > self.config.budget_usd_per_run:
+                return False, estimated_cost
+            self._estimated_spend_usd += estimated_cost
+            self._llm_call_count += 1
+            return True, estimated_cost
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return max(1, int(len(text or "") / 4))
+
+    def _rule_based_enrich(self, chunk_or_text: Any) -> Dict[str, Any]:
+        """Generate full structured metadata without calling LLM."""
+
+        if isinstance(chunk_or_text, Chunk):
+            chunk = chunk_or_text
+            text = chunk.text
+            source_metadata = chunk.metadata or {}
+        else:
+            chunk = None
+            text = chunk_or_text
+            source_metadata = {}
+
+        if text is None:
+            raise TypeError("Chunk text cannot be None")
+
+        heading_path = self._extract_heading_path(text, source_metadata)
+        section_path = normalise_string_list(
+            source_metadata.get("section_path") or heading_path,
+            limit=5,
+        )
+        title = self._extract_title(text, source_metadata, heading_path)
+        summary = self._extract_summary(text)
+        page_range = self._extract_page_range(source_metadata)
+        table_ids = self._extract_table_ids(text, source_metadata)
+        image_ids = self._extract_image_ids(text, source_metadata)
+        entities = (
+            extract_entities(text, source_metadata, 15)
+            if self.config.extract_entities
+            else []
+        )
+        tags = self._extract_tags(
+            text,
+            source_metadata,
+            title=title,
+            heading_path=heading_path,
+            entities=entities,
+        )
+        questions = generate_rule_based_questions(
+            title=title,
+            summary=summary,
+            entities=entities,
+            tags=tags,
+            enabled=self.config.generate_questions,
+            max_questions=3,
+        )
+
+        return validate_enrichment_metadata(
+            {
+                "title": title,
+                "summary": summary,
+                "tags": tags,
+                "section_path": section_path,
+                "heading_path": heading_path,
+                "page_range": page_range,
+                "table_ids": table_ids,
+                "image_ids": image_ids,
+                "entities": entities,
+                "questions": questions,
+                "enrichment_method": "rule_based",
+                "enrichment_cached": False,
+            }
+        )
+
+    def _extract_title(
+        self,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+        heading_path: Optional[list[str]] = None,
+    ) -> str:
+        metadata = metadata or {}
+        heading_path = heading_path or []
+        if metadata.get("title"):
+            return truncate_string(metadata["title"], 60)
+        if heading_path:
+            return truncate_string(heading_path[-1], 60)
+
+        heading_match = re.search(r"^#{1,6}\s+(.+)$", text or "", re.MULTILINE)
+        if heading_match:
+            return truncate_string(heading_match.group(1), 60)
+
+        for line in (text or "").splitlines()[:5]:
+            stripped = line.strip()
+            if stripped and len(stripped) <= 100 and not stripped.endswith((".", "。", ",", "，")):
+                return truncate_string(stripped.lstrip("#").strip(), 60)
+
+        sentence_match = re.search(r"(.+?)[。！？.!?](?:\s|$)", text or "")
+        if sentence_match:
+            return truncate_string(sentence_match.group(1), 60)
+
+        if not (text or "").strip():
+            return "Untitled"
+
+        source_path = metadata.get("source_path") or metadata.get("file_name")
+        if source_path:
+            return truncate_string(Path(str(source_path)).stem, 60)
+        return "Untitled"
+
+    def _extract_summary(self, text: str, max_sentences: int = 3) -> str:
+        if not text:
+            return ""
+        cleaned = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        sentences = re.split(r"(?<=[。！？.!?])\s+", cleaned)
+        selected = " ".join(sentence for sentence in sentences[:max_sentences] if sentence)
+        return truncate_string(selected or cleaned, 240)
+
+    def _extract_tags(
+        self,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+        *,
+        title: str = "",
+        heading_path: Optional[list[str]] = None,
+        entities: Optional[list[str]] = None,
+        max_tags: int = 8,
+    ) -> List[str]:
+        metadata = metadata or {}
+        if not (text or "").strip():
+            return []
+
+        candidates: list[str] = []
+        for key in ("file_type", "doc_type", "language"):
+            if metadata.get(key):
+                candidates.append(str(metadata[key]))
+        candidates.extend(heading_path or [])
+        if title:
+            candidates.append(title)
+        candidates.extend((entities or [])[:5])
+
+        lower = (text or "").lower()
+        keyword_map = {
+            "error": ("error", "exception", "错误", "报错", "http 4", "http 5"),
+            "config": ("config", "configuration", "配置", "settings.yaml"),
+            "deployment": ("deploy", "deployment", "docker", "部署"),
+            "api": ("api", "/api/"),
+            "version": ("version", "v1.", "版本"),
+            "table": ("|", "[table:"),
+            "image": ("[image:", "image_id"),
+        }
+        for tag, markers in keyword_map.items():
+            if any(marker in lower for marker in markers):
+                candidates.append(tag)
+
+        identifiers = re.findall(r"\b[a-z]+(?:[A-Z][A-Za-z0-9]*)+\b|\b[a-z]+_[a-z0-9_]+\b", text or "")
+        candidates.extend(identifiers[:5])
+        capitalized_terms = re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", text or "")
+        candidates.extend(capitalized_terms[:8])
+        return normalise_string_list(candidates, limit=max_tags)
+
+    def _extract_heading_path(
+        self,
+        text: str,
+        metadata: dict[str, Any],
+    ) -> list[str]:
+        existing = metadata.get("heading_path") or metadata.get("section_path")
+        if existing:
+            return normalise_string_list(existing, limit=5)
+
+        stack: list[str] = []
+        for match in re.finditer(r"^(#{1,6})\s+(.+)$", text or "", re.MULTILINE):
+            level = len(match.group(1))
+            heading = truncate_string(match.group(2), 80)
+            stack = stack[: level - 1]
+            stack.append(heading)
+        return stack[-5:]
+
+    @staticmethod
+    def _extract_page_range(metadata: dict[str, Any]) -> dict[str, int] | None:
+        if metadata.get("page_range"):
+            return normalise_page_range(metadata.get("page_range"))
+        if metadata.get("page_start") is not None or metadata.get("page_end") is not None:
+            return normalise_page_range(
+                {
+                    "start": metadata.get("page_start"),
+                    "end": metadata.get("page_end", metadata.get("page_start")),
+                }
+            )
+        for key in ("page_num", "page", "page_number"):
+            if metadata.get(key) is not None:
+                return normalise_page_range(metadata.get(key))
+        return None
+
+    @staticmethod
+    def _extract_table_ids(text: str, metadata: dict[str, Any]) -> list[str]:
+        values: list[Any] = []
+        for key in ("table_ids", "table_refs", "tables"):
+            item = metadata.get(key)
+            if isinstance(item, list):
+                values.extend(item)
+            elif item:
+                values.append(item)
+        values.extend(re.findall(r"\[TABLE:\s*([^\]]+)\]", text or "", flags=re.IGNORECASE))
+        return normalise_string_list(values, limit=50)
+
+    @staticmethod
+    def _extract_image_ids(text: str, metadata: dict[str, Any]) -> list[str]:
+        values: list[Any] = []
+        for key in ("image_ids", "image_refs", "images"):
+            item = metadata.get(key)
+            if isinstance(item, list):
+                values.extend(item)
+            elif item:
+                values.append(item)
+        values.extend(re.findall(r"\[IMAGE:\s*([^\]]+)\]", text or "", flags=re.IGNORECASE))
+        return normalise_string_list(values, limit=50)
+
+    def _llm_enrich(
+        self,
+        text: str,
+        rule_metadata: dict[str, Any],
+        trace: Optional[TraceContext] = None,
+    ) -> tuple[Optional[dict[str, Any]], bool]:
+        if not self.llm:
+            return None, False
+        try:
+            llm_input, truncated = self._truncate_for_llm(text)
+            prompt = self._load_prompt().replace("{chunk_text}", llm_input)
+            messages = [Message(role="user", content=prompt)]
+            response = self.llm.chat(messages)
+            response_text = getattr(response, "content", response)
+            response_text = str(response_text)
+            if not response_text.strip():
+                raise ValueError("empty LLM response")
+            if (
+                self.config.output_schema.lower() == "json"
+                and "{" not in response_text
+                and not re.search(r"^\s*Title:", response_text, flags=re.IGNORECASE | re.MULTILINE)
+            ):
+                raise ValueError("LLM response does not contain JSON metadata")
+            parsed = self._parse_llm_response(response_text, fallback=rule_metadata)
+            if trace is not None:
+                trace.record_stage(
+                    "llm_enrich",
+                    {"success": True, "input_truncated": truncated},
+                )
+            return parsed, truncated
+        except Exception as exc:
+            logger.warning(f"LLM metadata enrichment failed: {exc}")
+            if trace is not None:
+                trace.record_stage("llm_enrich", {"success": False, "error": str(exc)})
+            return None, False
+
+    def _merge_rule_and_llm(
+        self,
+        rule_metadata: dict[str, Any],
+        llm_metadata: dict[str, Any],
+        *,
+        input_truncated: bool,
+    ) -> dict[str, Any]:
+        merged = validate_enrichment_metadata(llm_metadata, fallback=rule_metadata)
+        for key in ("heading_path", "page_range"):
+            if not merged.get(key):
+                merged[key] = rule_metadata.get(key)
+        for key in ("tags", "entities", "questions", "section_path", "table_ids", "image_ids"):
+            merged[key] = normalise_string_list(
+                list(merged.get(key, [])) + list(rule_metadata.get(key, [])),
+                limit={
+                    "tags": 8,
+                    "entities": 15,
+                    "questions": 5,
+                    "section_path": 5,
+                    "table_ids": 50,
+                    "image_ids": 50,
+                }[key],
+            )
+        merged["enrichment_method"] = "hybrid"
+        merged["enrichment_cached"] = False
+        merged["enrichment_input_truncated"] = input_truncated
+        return add_text_companions(merged)
+
+    def _truncate_for_llm(self, text: str) -> tuple[str, bool]:
+        max_chars = max(1, self.config.max_tokens_per_chunk * 4)
+        if len(text or "") <= max_chars:
+            return text or "", False
+
+        head_chars = int(max_chars * 0.75)
+        head = (text or "")[:head_chars].rstrip()
+        preserved: list[str] = []
+        for line in (text or "").splitlines():
+            if re.search(r"\[(?:IMAGE|TABLE):", line, flags=re.IGNORECASE):
+                preserved.append(line.strip())
+            elif extract_entities(line, {}, 3):
+                preserved.append(line.strip())
+            if len("\n".join(preserved)) > max_chars - head_chars - 80:
+                break
+
+        suffix = "\n\n[TRUNCATED: preserved references]\n" + "\n".join(preserved)
+        truncated = (head + suffix)[:max_chars]
+        return truncated, True
+
+    def _load_prompt(self) -> str:
+        if self._prompt_template is not None:
+            return self._prompt_template
+        prompt_path = Path(self._prompt_path)
+        if not prompt_path.exists():
+            raise FileNotFoundError(f"Prompt file not found: {self._prompt_path}")
+        self._prompt_template = prompt_path.read_text(encoding="utf-8")
+        return self._prompt_template
+
+    def _parse_llm_response(
+        self,
+        response: str,
+        fallback: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            parsed = extract_json_object(response)
+            return validate_enrichment_metadata(parsed, fallback=fallback)
+        except Exception:
+            legacy = self._parse_legacy_response(response)
+            return validate_enrichment_metadata(legacy, fallback=fallback)
+
+    @staticmethod
+    def _parse_legacy_response(response: str) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"title": "", "summary": "", "tags": []}
+        title_match = re.search(r"Title:\s*(.+?)(?:\n|$)", response, re.IGNORECASE)
+        if title_match:
+            metadata["title"] = title_match.group(1).strip()
+        summary_match = re.search(
+            r"Summary:\s*(.+?)(?:\n(?:Tags:|$))",
+            response,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if summary_match:
+            metadata["summary"] = summary_match.group(1).strip()
+        tags_match = re.search(r"Tags:\s*(.+?)(?:\n|$)", response, re.IGNORECASE)
+        if tags_match:
+            metadata["tags"] = [
+                tag.strip() for tag in tags_match.group(1).split(",") if tag.strip()
+            ]
+        if not metadata["summary"]:
+            metadata["summary"] = response[:240]
+        return metadata
+
+    def _record_trace(
+        self,
+        original_chunks: List[Chunk],
+        enriched_chunks: List[Chunk],
+        trace: Optional[TraceContext],
+        *,
+        parallel: bool,
+    ) -> None:
+        if trace is None:
+            return
+        llm_count = sum(
+            1 for chunk in enriched_chunks
+            if chunk.metadata.get("enrichment_method") in {"llm", "hybrid"}
+        )
+        fallback_count = sum(
+            1 for chunk in enriched_chunks
+            if chunk.metadata.get("enrichment_method") == "fallback"
+        )
+        cache_hits = sum(1 for chunk in enriched_chunks if chunk.metadata.get("enrichment_cached"))
+        trace.record_stage(
+            "metadata_enricher",
+            {
+                "total_chunks": len(original_chunks),
+                "success_count": len(enriched_chunks),
+                "llm_enhanced_count": llm_count,
+                "fallback_count": fallback_count,
+                "cache_hits": cache_hits,
+                "use_llm": self.use_llm,
+                "parallel": parallel,
+                "max_concurrency": self.max_concurrency,
+                "estimated_spend_usd": round(self._estimated_spend_usd, 8),
+            },
+        )

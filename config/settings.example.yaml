@@ -91,5 +91,21 @@ ingestion:
   chunk_refiner:
     use_llm: false
 
+  metadata_enrichment:
+    enabled: true
+    use_llm: false
+    cache_enabled: true
+    cache_path: "./data/cache/metadata_enrichment_cache.sqlite"
+    max_tokens_per_chunk: 1200
+    max_concurrency: 3
+    budget_usd_per_run: 2.0
+    estimated_cost_per_1k_tokens: 0.0005
+    output_schema: "json"
+    fallback_to_rule_based: true
+    generate_questions: true
+    extract_entities: true
+    prompt_path: "config/prompts/metadata_enrichment_json.txt"
+
+  # Legacy block kept for backward compatibility. Prefer metadata_enrichment.
   metadata_enricher:
     use_llm: false

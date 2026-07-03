@@ -1,0 +1,28 @@
+You are a metadata extraction assistant for an enterprise RAG ingestion pipeline.
+Return only one valid JSON object. Do not include Markdown, explanations, or code fences.
+
+Text chunk:
+```
+{chunk_text}
+```
+
+Extract metadata with this exact schema:
+{
+  "title": "short title, max 60 characters",
+  "summary": "concise factual summary, max 240 characters",
+  "tags": ["3 to 8 topic tags"],
+  "section_path": ["document section path if inferable"],
+  "heading_path": ["markdown or document heading path if inferable"],
+  "page_range": {"start": 1, "end": 1},
+  "table_ids": ["table ids referenced in the chunk"],
+  "image_ids": ["image ids referenced in the chunk"],
+  "entities": ["important products, APIs, versions, errors, people, orgs"],
+  "questions": ["natural questions this chunk can answer"]
+}
+
+Rules:
+- Use null for page_range when no page is inferable.
+- Use empty arrays for missing list fields.
+- Keep values factual and grounded in the chunk.
+- Preserve table/image identifiers exactly, such as [TABLE: table_001] -> "table_001".
+- Do not invent secrets, API keys, or personal data.

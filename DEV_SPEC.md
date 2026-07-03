@@ -1705,7 +1705,7 @@ smart-knowledge-hub/
 | `chunking/document_chunker.py` | Document→Chunks 转换 | 调用 `libs.splitter` 进行文本切分；生成稳定 Chunk ID（格式：`{doc_id}_{index:04d}_{hash}`）；继承 metadata；建立 source_ref 溯源链接 |
 | `transform/base_transform.py` | Transform 抽象 | 原子化、幂等；可独立重试；失败降级不阻塞 |
 | `transform/chunk_refiner.py` | Chunk 智能重组 | 规则去噪 + 可选 LLM 二次加工；可回退 |
-| `transform/metadata_enricher.py` | 元数据增强 | Title/Summary/Tags 规则生成 + 可选 LLM 增强 |
+| `transform/metadata_enricher.py` | 元数据增强 | 结构化 metadata 生成（title/summary/tags/path/page/media/entities/questions）+ 可选 LLM JSON 增强 + SQLite 缓存 |
 | `transform/image_captioner.py` | 图片描述生成 | Vision LLM；写回 metadata/text；禁用/失败降级 |
 | `embedding/dense_encoder.py` | 稠密向量编码 | 通过 `libs.embedding` 调用具体 provider；批处理 |
 | `embedding/sparse_encoder.py` | 稀疏向量编码 | BM25 编码/统计（或替换实现）；批处理 |
@@ -2031,7 +2031,7 @@ dashboard:
 | C3.5 | 多格式 LoaderFactory 扩展 | [x] | 2026-07-02 | LoaderFactory + Markdown/TXT/HTML/DOCX/Code Loader + supported_extensions 配置 + TXT/MD dry-run E2E |
 | C4 | Splitter 集成（调用 Libs） | [x] | 2026-01-31 | DocumentChunker + 19个单元测试 + 5个核心增值功能 |
 | C5 | Transform 基类 + ChunkRefiner | [x] | 2026-01-31 | BaseTransform + ChunkRefiner (Rule + LLM) + TraceContext + 25单元测试 + 5集成测试 |
-| C6 | MetadataEnricher | [x] | 2026-01-31 | MetadataEnricher (Rule + LLM) + 26单元测试 + 真实LLM集成测试 |
+| C6 | MetadataEnricher | [x] | 2026-07-04 | 结构化 metadata schema + Rule/LLM JSON + SQLite 缓存 + 39个单元测试 |
 | C7 | ImageCaptioner | [x] | 2026-02-01 | ImageCaptioner + Azure Vision LLM 实现 + 集成测试 |
 | C8 | DenseEncoder | [x] | 2026-02-01 | 批量编码+Azure集成测试 |
 | C9 | SparseEncoder | [x] | 2026-02-01 | 词频统计+语料库统计+26单元测试 |
@@ -2613,16 +2613,45 @@ dashboard:
     - 集成测试：验证系统可用性
     - 两者互补，缺一不可
 
-### C6：MetadataEnricher（规则增强 + 可选 LLM 增强 + 降级）
-- **目标**：实现元数据增强模块：提供规则增强的默认实现，并重点支持 LLM 增强（配置已就绪，LLM 开关打开）。利用 LLM 对 chunk 进行高质量的 title 生成、summary 摘要和 tags 提取。同时保留失败降级机制，确保不阻塞 ingestion。
+### C6：MetadataEnricher（结构化 metadata + 可选 LLM JSON 增强 + 缓存 + 降级）
+- **目标**：将 chunk 级 metadata 从基础 `title/summary/tags` 扩展为可检索、可过滤、可评测的结构化 schema。默认使用规则抽取，不依赖 LLM；开启 LLM 时要求 JSON 输出并做 schema 校验，解析失败、调用失败或预算超限时回退到规则结果，确保 ingestion 不被单个 chunk 阻塞。
+- **结构化字段**：
+  - `title`、`summary`、`tags`
+  - `section_path`、`heading_path`、`page_range`
+  - `table_ids`、`image_ids`
+  - `entities`、`questions`
+  - `enrichment_method`、`enrichment_cached`
+  - 为 Chroma metadata 兼容性额外提供 `*_text` companion 字段，如 `tags_text`、`heading_path_text`、`page_range_text`
+- **配置设计**：
+  - 推荐使用新配置块 `ingestion.metadata_enrichment`
+  - 兼容旧配置块 `ingestion.metadata_enricher`
+  - 默认值：`use_llm=false`、`cache_enabled=true`、`max_tokens_per_chunk=1200`、`max_concurrency=3`、`budget_usd_per_run=2.0`、`output_schema=json`、`fallback_to_rule_based=true`、`generate_questions=true`、`extract_entities=true`
+- **关键实现**：
+  - 规则抽取：从 Markdown 标题、页码 metadata、`[TABLE: ...]`、`[IMAGE: ...]`、版本号、HTTP 错误码、API 路径、代码符号等信息生成结构化字段。
+  - LLM JSON：使用 `config/prompts/metadata_enrichment_json.txt` 要求模型返回单个 JSON object，支持 fenced JSON 解析并做字段归一化。
+  - 缓存：通过 `data/cache/metadata_enrichment_cache.sqlite` 保存 enrichment 结果，key 由 `chunk_id + text_hash + config_hash` 组成，重复处理时直接命中。
+  - 并发与预算：LLM 模式下按 `max_concurrency` 并发处理，并用 `budget_usd_per_run` 做单次运行预算保护。
 - **修改文件**：
   - `src/ingestion/transform/metadata_enricher.py`
+  - `src/ingestion/transform/metadata_schema.py`
+  - `src/ingestion/transform/metadata_cache.py`
+  - `src/ingestion/transform/entity_extractor.py`
+  - `src/ingestion/transform/question_generator.py`
+  - `config/prompts/metadata_enrichment_json.txt`
   - `tests/unit/test_metadata_enricher_contract.py`
+  - `tests/unit/test_metadata_enricher_schema.py`
+  - `tests/unit/test_metadata_enricher_rule_based.py`
+  - `tests/unit/test_metadata_enricher_cache.py`
+  - `tests/unit/test_metadata_enricher_llm_json.py`
 - **验收标准**：
-  - 规则模式：作为兜底逻辑，输出 metadata 必须包含 `title/summary/tags`（至少非空）。
-  - **LLM 模式（核心）**：在 LLM 打开的情况下，确保真实调用 LLM（或高质量 Mock）并生成语义丰富的 metadata。需验证在有真实 LLM 配置下的连通性与效果。
-  - 降级行为：LLM 调用失败时回退到规则模式结果（可在 metadata 标记降级原因，但不抛出致命异常）。
-- **测试方法**：`pytest -q tests/unit/test_metadata_enricher_contract.py`，并确保包含开启 LLM 的集成测试用例。
+  - 规则模式：输出完整结构化 schema，且能抽取 heading/page/table/image/entity/question。
+  - LLM 模式：能解析 JSON 或 fenced JSON，并与规则字段合并；无效输出时回退到规则结果。
+  - 缓存：相同 chunk 与配置命中缓存；文本或配置变化时缓存失效。
+  - 兼容性：保留 `enriched_by`、旧版 `Title/Summary/Tags` 解析和旧配置入口。
+- **测试方法**：
+  ```bash
+  pytest -q tests/unit/test_metadata_enricher_schema.py tests/unit/test_metadata_enricher_rule_based.py tests/unit/test_metadata_enricher_cache.py tests/unit/test_metadata_enricher_llm_json.py tests/unit/test_metadata_enricher_contract.py
+  ```
 
 ### C7：ImageCaptioner（可选生成 caption + 降级不阻塞）
 - **目标**：实现 `image_captioner.py`：当启用 Vision LLM 且存在 image_refs 时生成 caption 并写回 chunk metadata；当禁用/不可用/异常时走降级路径，不阻塞 ingestion。
