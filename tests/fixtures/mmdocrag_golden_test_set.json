@@ -1,0 +1,93 @@
+{
+  "test_cases": [
+    {
+      "query": "系统的检索链路由哪些阶段组成？",
+      "question_type": "text_qa",
+      "reference_answer": "检索链路包括查询处理、Dense/BM25 召回、RRF 融合和可选重排。",
+      "expected_chunk_ids": ["text_chunk_001"],
+      "expected_sources": ["architecture.pdf"],
+      "expected_pages": [1],
+      "expected_modalities": ["text"],
+      "expected_evidence": [
+        {
+          "source": "architecture.pdf",
+          "page": 1,
+          "chunk_id": "text_chunk_001",
+          "modality": "text",
+          "image_id": null,
+          "table_id": null,
+          "text": "Query Processor, Dense Retrieval, Sparse Retrieval, Fusion, Reranker."
+        }
+      ]
+    },
+    {
+      "query": "架构图展示了哪些核心模块？",
+      "question_type": "image_qa",
+      "reference_answer": "架构图展示了 MCP Server、Core Query Engine、Vector Store、BM25 Index 和 Image Store。",
+      "expected_chunk_ids": ["image_chunk_001"],
+      "expected_sources": ["architecture.pdf"],
+      "expected_pages": [2],
+      "expected_modalities": ["image"],
+      "expected_evidence": [
+        {
+          "source": "architecture.pdf",
+          "page": 2,
+          "chunk_id": "image_chunk_001",
+          "modality": "image",
+          "image_id": "img_arch_001",
+          "table_id": null,
+          "text": "架构图包含 MCP Server、Core、Storage 和 Observability 模块。"
+        }
+      ]
+    },
+    {
+      "query": "表格中列出的默认向量库是什么？",
+      "question_type": "table_qa",
+      "reference_answer": "表格中列出的默认向量库是 Chroma。",
+      "expected_chunk_ids": ["table_chunk_001"],
+      "expected_sources": ["tech_stack.pdf"],
+      "expected_pages": [3],
+      "expected_modalities": ["table"],
+      "expected_evidence": [
+        {
+          "source": "tech_stack.pdf",
+          "page": 3,
+          "chunk_id": "table_chunk_001",
+          "modality": "table",
+          "image_id": null,
+          "table_id": "tbl_vector_001",
+          "text": "VectorStore 默认实现为 Chroma。"
+        }
+      ]
+    },
+    {
+      "query": "多模态返回如何同时提供文字答案和图片？",
+      "question_type": "multi_modal_qa",
+      "reference_answer": "系统先检索命中包含图片引用的 chunk，再通过 image_id 读取图片并组装 TextContent 与 ImageContent。",
+      "expected_chunk_ids": ["multi_chunk_001", "image_chunk_002"],
+      "expected_sources": ["multimodal_flow.pdf"],
+      "expected_pages": [4],
+      "expected_modalities": ["text", "image"],
+      "expected_evidence": [
+        {
+          "source": "multimodal_flow.pdf",
+          "page": 4,
+          "chunk_id": "multi_chunk_001",
+          "modality": "text",
+          "image_id": null,
+          "table_id": null,
+          "text": "响应构建器输出文字说明。"
+        },
+        {
+          "source": "multimodal_flow.pdf",
+          "page": 4,
+          "chunk_id": "image_chunk_002",
+          "modality": "image",
+          "image_id": "img_response_001",
+          "table_id": null,
+          "text": "ImageContent 通过 image_id 读取并编码。"
+        }
+      ]
+    }
+  ]
+}

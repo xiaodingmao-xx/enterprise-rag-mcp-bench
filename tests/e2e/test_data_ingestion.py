@@ -167,12 +167,11 @@ class TestDataIngestion:
     
     def test_ingest_unsupported_file_type(self, tmp_path):
         """Test error handling for unsupported file types."""
-        # Create a text file
-        text_file = tmp_path / "document.txt"
-        text_file.write_text("This is a text file")
+        unsupported_file = tmp_path / "document.xyz"
+        unsupported_file.write_text("This is an unsupported file type")
         
         result = self.run_ingest_script(
-            path=str(text_file)
+            path=str(unsupported_file)
         )
         
         assert result.returncode == 2

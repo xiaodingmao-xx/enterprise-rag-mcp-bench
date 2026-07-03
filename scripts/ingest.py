@@ -5,10 +5,10 @@ This script provides a command-line interface for ingesting documents into
 the knowledge hub. It supports processing single files or entire directories.
 
 Usage:
-    # Process a single PDF file
+    # Process a single document file
     python scripts/ingest.py --path documents/report.pdf --collection contracts
     
-    # Process all PDFs in a directory
+    # Process all supported files in a directory
     python scripts/ingest.py --path documents/ --collection technical_docs
     
     # Force re-processing (ignore previous ingestion)
@@ -47,6 +47,7 @@ sys.path.insert(0, str(project_root))
 from src.core.settings import load_settings, Settings
 from src.core.trace import TraceContext, TraceCollector
 from src.ingestion.pipeline import IngestionPipeline, PipelineResult
+from src.libs.loader.loader_factory import LoaderFactory
 from src.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +69,7 @@ def parse_args() -> argparse.Namespace:
         "--path", "-p",
         required=True,
         help="Path to file or directory to ingest. "
-             "If directory, processes all PDF files recursively."
+             "If directory, processes supported files recursively."
     )
     
     parser.add_argument(
@@ -109,13 +110,15 @@ def discover_files(path: str, extensions: List[str] = None) -> List[Path]:
     
     Args:
         path: File or directory path
-        extensions: List of file extensions to include (default: ['.pdf'])
+        extensions: List of file extensions to include.
     
     Returns:
         List of file paths to process
     """
     if extensions is None:
-        extensions = ['.pdf']
+        extensions = LoaderFactory.supported_extensions()
+    extensions = _normalise_extensions(extensions)
+    extension_set = set(extensions)
     
     path = Path(path)
     
@@ -123,21 +126,32 @@ def discover_files(path: str, extensions: List[str] = None) -> List[Path]:
         raise FileNotFoundError(f"Path does not exist: {path}")
     
     if path.is_file():
-        if path.suffix.lower() in extensions:
+        if path.suffix.lower() in extension_set:
             return [path]
         else:
             raise ValueError(f"Unsupported file type: {path.suffix}. Supported: {extensions}")
     
     # Directory: recursively find all matching files
-    files = []
-    for ext in extensions:
-        files.extend(path.rglob(f"*{ext}"))
-        files.extend(path.rglob(f"*{ext.upper()}"))
-    
-    # Remove duplicates and sort
-    files = sorted(set(files))
+    files = sorted(
+        file_path
+        for file_path in path.rglob("*")
+        if file_path.is_file() and file_path.suffix.lower() in extension_set
+    )
     
     return files
+
+
+def _normalise_extensions(extensions: List[str]) -> List[str]:
+    normalised: List[str] = []
+    for extension in extensions:
+        ext = str(extension).strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        if ext not in normalised:
+            normalised.append(ext)
+    return normalised
 
 
 def print_summary(results: List[PipelineResult], verbose: bool = False) -> None:
@@ -208,10 +222,13 @@ def main() -> int:
     except Exception as e:
         print(f"[FAIL] Failed to load configuration: {e}")
         return 2
+
+    supported_extensions = LoaderFactory.get_supported_extensions(settings)
+    print(f"[INFO] Supported extensions: {', '.join(supported_extensions)}")
     
     # Discover files
     try:
-        files = discover_files(args.path)
+        files = discover_files(args.path, supported_extensions)
         print(f"[INFO] Found {len(files)} file(s) to process")
         
         if len(files) == 0:

@@ -39,11 +39,11 @@
 
 | 模块 | 能力 | 说明 |
 |------|------|------|
-| **Ingestion Pipeline** | PDF → Markdown → Chunk → Transform → Embedding → Upsert | 全链路数据摄取，支持多模态图片描述（Image Captioning） |
+| **Ingestion Pipeline** | 多格式文档 → Chunk → Transform → Embedding → Upsert | 支持 PDF / Markdown / TXT / HTML / DOCX / 代码文件摄取，PDF 保留多模态图片描述（Image Captioning） |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
 | **MCP Server** | 标准 MCP 协议暴露 Tools | `query_knowledge_hub`、`list_collections`、`get_document_summary` |
 | **Dashboard** | Streamlit 六页面管理平台 | 系统总览 / 数据浏览 / Ingestion 管理 / 摄取追踪 / 查询追踪 / 评估面板 |
-| **Evaluation** | Ragas + Custom 评估体系 | 支持 golden test set 回归测试，拒绝"凭感觉"调优 |
+| **Evaluation** | Ragas + Custom + MMDocRAG 评估体系 | 支持 golden test set 回归测试、消融实验和多模态文档 QA 指标，拒绝"凭感觉"调优 |
 | **Observability** | 全链路白盒化追踪 | Ingestion 与 Query 两条链路的每一个中间状态透明可见 |
 | **Skill 驱动全流程** | 从编写到测试、打包、配置一键完成 | auto-coder / qa-tester / package / setup 等 Skill 覆盖完整开发生命周期（笔记中每个 Skill 的使用和设计思路均有讲解，请参考配套视频） |
 
@@ -137,7 +137,20 @@ vision_llm:
 
 真实 API Key 请放在本机 `.env` 或系统环境变量中，不要写入仓库。当前默认配置里的 `llm.api_key`、`embedding.api_key`、`vision_llm.api_key` 都会从环境变量读取。
 
-### 4. 消融评估（Ablation Evaluation）
+### 4. 摄取多格式文档
+
+`scripts/ingest.py` 现在通过 `LoaderFactory` 自动识别文档类型。默认支持 `.pdf`、`.md`、`.txt`、`.html`、`.htm`、`.docx`、`.py`、`.js`、`.java`：
+
+```bash
+python scripts/ingest.py --path documents/ --collection knowledge_base
+python scripts/ingest.py --path documents/guide.md --collection knowledge_base --dry-run
+```
+
+支持的扩展名可以在 `config/settings.yaml` 的 `ingestion.supported_extensions` 中配置。PDF 仍然使用原有 `PdfLoader`，保留 MarkItDown 文本解析、图片抽取和 `[IMAGE: ...]` 占位符行为；其它格式会直接抽取可检索文本并写入统一的 `Document` 契约。
+
+`.doc` 这类旧版 Office 二进制格式暂不默认支持，建议先转换为 `.docx` 后再摄取。
+
+### 5. 消融评估（Ablation Evaluation）
 
 项目提供 `scripts/run_ablation_eval.py` 对比四种检索模式：`dense`、`bm25`、`hybrid`、`hybrid_rerank`。脚本会读取 golden test set，计算 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，并将结果保存到 `eval/results/{timestamp}.json`。
 
@@ -146,6 +159,26 @@ python scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --to
 ```
 
 默认数据集是 `tests/fixtures/golden_test_set.json`。测试集中可以用 `expected_chunk_ids` 做 chunk 级评估，也可以用 `expected_sources` 做来源文档级评估；未标注相关文档的 query 会被跳过，不参与聚合指标。
+
+### 6. 多模态文档评测（MMDocRAG Evaluation）
+
+项目新增 `scripts/run_mmdocrag_eval.py`，用于评估多模态文档 RAG 场景。它复用 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式，并额外计算多模态能力、答案质量、引用可靠性和延迟指标：
+
+```bash
+python scripts/run_mmdocrag_eval.py ^
+  --dataset tests/fixtures/mmdocrag_golden_test_set.json ^
+  --config config/settings.yaml ^
+  --collection default ^
+  --top-k 10 ^
+  --modes dense bm25 hybrid hybrid_rerank ^
+  --enable-generation ^
+  --enable-llm-judge ^
+  --markdown
+```
+
+输出会保存到 `eval/results/{timestamp}_mmdocrag.json`；传入 `--markdown` 时，会额外保存 Markdown 汇总表。核心指标包括 `recall@k`、`ndcg@k`、`modality_recall@k`、`image_hit@k`、`table_hit@k`、`answer_correctness`、`faithfulness`、`citation_accuracy` 和平均 latency。
+
+LLM-as-Judge 指标是可选的：未传入 `--enable-llm-judge`、LLM 未配置或 API Key 缺失时，`answer_correctness` 与 `faithfulness` 会自动跳过，不影响检索和多模态指标运行。
 
 ---
 

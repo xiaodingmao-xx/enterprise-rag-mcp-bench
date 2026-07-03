@@ -14,6 +14,7 @@ Design Principles:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -79,3 +80,19 @@ class BaseLoader(ABC):
         if not path.is_file():
             raise ValueError(f"Path is not a file: {path}")
         return path
+
+    @staticmethod
+    def _compute_file_hash(file_path: Path) -> str:
+        """Compute SHA256 hash of file content."""
+
+        sha256 = hashlib.sha256()
+        with file_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    @classmethod
+    def _document_id(cls, file_path: Path) -> str:
+        """Generate a stable document ID from file content."""
+
+        return f"doc_{cls._compute_file_hash(file_path)[:16]}"

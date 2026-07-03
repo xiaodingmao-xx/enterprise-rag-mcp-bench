@@ -595,6 +595,14 @@ MCP 协议的 Tool 返回格式支持多种内容类型（`content` 数组），
 	- 指标模块 `src/observability/evaluation/ir_metrics.py` 实现 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，以 pure function 形式提供，便于单元测试和复用。
 	- 评估结果保存到 `eval/results/{timestamp}.json`，可通过 `--markdown` 额外输出 Markdown 表格，便于实验记录与面试讲解。
 
+- **MMDocRAG 多模态文档评测**：
+	- 提供 `scripts/run_mmdocrag_eval.py`，复用 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式，在不改动主 RAG 链路的前提下增加多模态文档 QA 指标。
+	- 检索质量复用 `ir_metrics.py` 中的 `Recall@K` 与 `NDCG@K`。
+	- `multimodal_metrics.py` 计算 `modality_recall@k`、`image_hit@k`、`table_hit@k`，从 `metadata.modality`、`content_type`、`has_image`、`has_table`、`image_id`、`table_id` 等字段推断模态，字段缺失时优雅降级。
+	- `generation_metrics.py` 通过可选 LLM-as-Judge 计算 `answer_correctness` 与 `faithfulness`；未开启 judge 或 API Key 缺失时自动跳过，不影响检索指标。
+	- `citation_metrics.py` 计算 `citation_accuracy`，兼容答案中的 `[1]` 排名引用、显式 `chunk_id/image_id/table_id` 标记，以及 golden set 的 `expected_sources`、`expected_pages`、`expected_chunk_ids`、`expected_evidence`。
+	- 评估结果保存到 `eval/results/{timestamp}_mmdocrag.json`，可通过 `--markdown` 输出包含平均 latency 的汇总表。
+
 #### 3.3.5 配置管理与切换流程
 
 - **配置文件结构示例** (`config/settings.yaml`)：
@@ -1495,7 +1503,13 @@ smart-knowledge-hub/
 │   │   ├── loader/                      # Loader 抽象 (文档加载)
 │   │   │   ├── __init__.py
 │   │   │   ├── base_loader.py           # Loader 抽象基类
+│   │   │   ├── loader_factory.py        # LoaderFactory：按扩展名分发多格式 Loader
 │   │   │   ├── pdf_loader.py            # PDF Loader (MarkItDown)
+│   │   │   ├── markdown_loader.py       # Markdown Loader
+│   │   │   ├── text_loader.py           # TXT Loader
+│   │   │   ├── html_loader.py           # HTML Loader (BeautifulSoup)
+│   │   │   ├── docx_loader.py           # DOCX Loader (python-docx)
+│   │   │   ├── code_loader.py           # 代码文件 Loader (.py/.js/.java)
 │   │   │   └── file_integrity.py        # 文件完整性检查 (SHA256 哈希)
 │   │   │
 │   │   ├── llm/                         # LLM 抽象
@@ -1566,6 +1580,9 @@ smart-knowledge-hub/
 │           ├── __init__.py
 │           ├── eval_runner.py           # 评估执行器
 │           ├── ir_metrics.py            # IR 指标 (Recall@K/Precision@K/MRR@K/NDCG@K)
+│           ├── multimodal_metrics.py    # MMDocRAG 多模态指标
+│           ├── generation_metrics.py    # Answer Correctness / Faithfulness Judge
+│           ├── citation_metrics.py      # Citation Accuracy
 │           ├── ragas_evaluator.py       # Ragas 评估实现
 │           └── composite_evaluator.py   # 组合评估器 (多后端并行)
 
@@ -1630,6 +1647,7 @@ smart-knowledge-hub/
 │   ├── query.py                         # 查询测试脚本（在线查询入口）
 │   ├── evaluate.py                      # 评估运行脚本
 │   ├── run_ablation_eval.py             # 消融评估脚本 (dense/bm25/hybrid/hybrid_rerank)
+│   ├── run_mmdocrag_eval.py             # MMDocRAG 多模态文档评测脚本
 │   └── start_dashboard.py               # Dashboard 启动脚本
 │
 ├── main.py                              # MCP Server 启动入口
@@ -1670,10 +1688,11 @@ smart-knowledge-hub/
 
 | 脚本 | 职责 | 关键技术点 |
 |-----|-----|----------|
-| `ingest.py` | 离线数据摄取入口 | CLI 参数解析，调用 Ingestion Pipeline，支持 `--collection`/`--path`/`--force` |
+| `ingest.py` | 离线数据摄取入口 | CLI 参数解析，调用 Ingestion Pipeline，基于 `LoaderFactory` 发现支持的多格式文档，支持 `--collection`/`--path`/`--force` |
 | `query.py` | 在线查询测试入口 | CLI 参数解析，调用 HybridSearch + Reranker，支持 `--query`/`--top-k`/`--verbose` |
 | `evaluate.py` | 评估运行入口 | 加载 golden_test_set，运行评估，输出 metrics |
 | `run_ablation_eval.py` | 消融评估入口 | 对比 dense/bm25/hybrid/hybrid_rerank，输出 JSON 与可选 Markdown 表格 |
+| `run_mmdocrag_eval.py` | MMDocRAG 评测入口 | 对比四种检索模式，输出检索质量、多模态能力、答案质量、引用可靠性与 latency |
 | `start_dashboard.py` | Dashboard 启动入口 | Streamlit 应用启动 |
 
 #### 5.3.4 Ingestion Pipeline 层
@@ -1725,6 +1744,9 @@ smart-knowledge-hub/
 | `dashboard/services/config_service.py` | 配置读取服务 | 封装 Settings 展示 |
 | `evaluation/eval_runner.py` | 评估执行 | 黄金测试集，指标计算，报告生成 |
 | `evaluation/ir_metrics.py` | IR 指标计算 | Recall@K、Precision@K、MRR@K、NDCG@K，去重后按 Top-K 计算 |
+| `evaluation/multimodal_metrics.py` | MMDocRAG 多模态指标 | Modality Recall@K、Image Hit@K、Table Hit@K，兼容多种 metadata 字段 |
+| `evaluation/generation_metrics.py` | LLM-as-Judge 生成指标 | Answer Correctness、Faithfulness，JSON 结构化输出，失败自动跳过 |
+| `evaluation/citation_metrics.py` | 引用可靠性指标 | Citation Accuracy，支持 source/page/chunk_id/image_id/table_id 标注 |
 | `evaluation/ragas_evaluator.py` | Ragas 评估 | Faithfulness, Answer Relevancy, Context Precision |
 | `evaluation/composite_evaluator.py` | 组合评估器 | 多后端并行执行，结果汇总 |
 
@@ -2006,6 +2028,7 @@ dashboard:
 | C1 | 定义核心数据类型/契约（Document/Chunk/ChunkRecord） | [x] | 2026-01-30 | Document/Chunk/ChunkRecord + 18个单元测试 |
 | C2 | 文件完整性检查（SHA256） | [x] | 2026-01-30 | FileIntegrityChecker + SQLiteIntegrityChecker + 25个单元测试 |
 | C3 | Loader 抽象基类与 PDF Loader | [x] | 2026-01-30 | BaseLoader + PdfLoader + PyMuPDF图片提取 + 21单元测试 + 9集成测试 |
+| C3.5 | 多格式 LoaderFactory 扩展 | [x] | 2026-07-02 | LoaderFactory + Markdown/TXT/HTML/DOCX/Code Loader + supported_extensions 配置 + TXT/MD dry-run E2E |
 | C4 | Splitter 集成（调用 Libs） | [x] | 2026-01-31 | DocumentChunker + 19个单元测试 + 5个核心增值功能 |
 | C5 | Transform 基类 + ChunkRefiner | [x] | 2026-01-31 | BaseTransform + ChunkRefiner (Rule + LLM) + TraceContext + 25单元测试 + 5集成测试 |
 | C6 | MetadataEnricher | [x] | 2026-01-31 | MetadataEnricher (Rule + LLM) + 26单元测试 + 真实LLM集成测试 |
@@ -2017,7 +2040,7 @@ dashboard:
 | C12 | VectorUpserter（幂等upsert） | [x] | 2026-02-01 | 稳定chunk_id生成+幂等upsert+21单元测试 |
 | C13 | ImageStorage（图片存储+SQLite索引） | [x] | 2026-02-01 | ImageStorage + SQLite索引 + 37个单元测试 + WAL并发支持 |
 | C14 | Pipeline 编排（MVP 串起来） | [x] | 2026-02-02 | 完整流程编排+Azure LLM/Embedding集成测试通过 |
-| C15 | 脚本入口 ingest.py | [x] | 2026-02-02 | CLI脚本+E2E测试+文件发现+skip功能 |
+| C15 | 脚本入口 ingest.py | [x] | 2026-02-02 | CLI脚本+E2E测试+多格式文件发现+skip功能 |
 
 #### 阶段 D：Retrieval MVP
 
@@ -2070,6 +2093,8 @@ dashboard:
 | H1 | RagasEvaluator 实现 | [x] | 2026-02-09 | 19/19 tests passed |
 | H2 | CompositeEvaluator 实现 | [x] | 2026-02-09 | 11/11 tests passed |
 | H3 | EvalRunner + Golden Test Set | [x] | 2026-02-09 | 15/15 tests passed |
+| H3.5 | Ablation Evaluation | [x] | 2026-07-02 | dense/bm25/hybrid/hybrid_rerank + Recall/Precision/MRR/NDCG |
+| H3.6 | MMDocRAG Evaluation | [x] | 2026-07-03 | 多模态文档 QA 指标 + LLM Judge 可选 + citation/latency |
 | H4 | 评估面板页面 | [x] | 2026-02-09 | 6/6 tests passed, dashboard page with history tracking |
 | H5 | Recall 回归测试（E2E） | [x] | 2026-02-09 | 3 unit+4 e2e(skip without data), hit@k+MRR threshold gating |
 
@@ -2436,6 +2461,50 @@ dashboard:
   - 验证纯文本PDF能正常解析
   - 验证带图片PDF能提取图片并正确插入占位符
 
+### C3.5：多格式 LoaderFactory 扩展
+- **目标**：在保持 `PdfLoader` 原有行为不变的前提下，扩展 ingestion 文件入口，支持企业知识库常见文档与代码文件格式。
+- **支持格式**：
+  - 文档：`.pdf`、`.md`、`.txt`、`.html`、`.htm`、`.docx`
+  - 代码：`.py`、`.js`、`.java`
+  - 暂不默认支持旧版 `.doc` 二进制格式；如需摄取，先转换为 `.docx`
+- **修改文件**：
+  - `src/libs/loader/loader_factory.py`
+  - `src/libs/loader/markdown_loader.py`
+  - `src/libs/loader/text_loader.py`
+  - `src/libs/loader/html_loader.py`
+  - `src/libs/loader/docx_loader.py`
+  - `src/libs/loader/code_loader.py`
+  - `src/ingestion/pipeline.py`
+  - `scripts/ingest.py`
+  - `src/core/settings.py`
+  - `config/settings.yaml`
+  - `config/settings.example.yaml`
+  - `tests/unit/test_loader_factory.py`
+  - `tests/e2e/test_ingest_txt_md.py`
+- **实现类/函数**：
+  - `LoaderFactory.get_loader(file_path, settings=None, **kwargs) -> BaseLoader`
+  - `LoaderFactory.get_supported_extensions(settings=None) -> tuple[str, ...]`
+  - `UnsupportedFileTypeError`
+  - `MarkdownLoader.load(path) -> Document`
+  - `TextLoader.load(path) -> Document`
+  - `HtmlLoader.load(path) -> Document`
+  - `DocxLoader.load(path) -> Document`
+  - `CodeLoader.load(path) -> Document`
+- **配置项**：
+  - `ingestion.supported_extensions`：可配置允许摄取的文件后缀列表，默认值为上述支持格式。
+  - CLI 目录扫描必须使用该配置过滤文件，避免把临时文件、二进制文件或不支持格式送入 Pipeline。
+- **验收标准**：
+  - `.pdf` 仍然由 `PdfLoader` 处理，图片提取与 `[IMAGE: ...]` 占位符契约不变。
+  - `.md` 保留 Markdown 结构，标题优先来自第一个一级标题。
+  - `.txt` 以纯文本读取，保留原始文本内容。
+  - `.html` / `.htm` 去除 `script/style/noscript` 后提取正文文本，标题优先来自 `<title>` 或 `<h1>`。
+  - `.docx` 提取段落与表格文本，表格可转换为 Markdown 表格。
+  - `.py` / `.js` / `.java` 保留代码文本，并在 metadata 中记录语言信息。
+  - 不支持的扩展名抛出清晰错误，并在 CLI 中返回用户可理解的提示。
+- **测试方法**：
+  - `pytest -q tests/unit/test_loader_factory.py`
+  - `pytest -q tests/e2e/test_ingest_txt_md.py`
+
 ### C4：Splitter 集成（调用 Libs）
 - **目标**：实现 Chunking 模块作为 `libs.splitter` 和 Ingestion Pipeline 之间的**适配器层**，完成 Document→Chunks 的业务对象转换。
 - **核心职责（DocumentChunker 相比 libs.splitter 的增值）**：
@@ -2680,11 +2749,11 @@ dashboard:
 - **测试方法**：`pytest -v tests/integration/test_ingestion_pipeline.py`。
 
 ### C15：脚本入口 ingest.py（离线可用）
-- **目标**：实现 `scripts/ingest.py`，支持 `--collection`、`--path`、`--force`，并调用 pipeline。
+- **目标**：实现 `scripts/ingest.py`，支持 `--collection`、`--path`、`--force`，基于 `LoaderFactory` 和 `ingestion.supported_extensions` 发现可摄取文件，并调用 pipeline。
 - **修改文件**：
   - `scripts/ingest.py`
   - `tests/e2e/test_data_ingestion.py`
-- **验收标准**：命令行可运行并在 `data/db` 产生产物；重复运行在未变更时跳过。
+- **验收标准**：命令行可运行并在 `data/db` 产生产物；目录扫描只处理支持扩展名；重复运行在未变更时跳过。
 - **测试方法**：`pytest -q tests/e2e/test_data_ingestion.py`（尽量用临时目录）。
 
 ---
@@ -3131,6 +3200,42 @@ dashboard:
   - 支持 `expected_chunk_ids` 的 chunk 级评估，以及 `expected_sources` 的来源级评估。
   - 未标注相关文档的 query 标记为 skipped，不参与聚合指标。
 - **测试方法**：`pytest -q tests/unit/test_ir_metrics.py`，并执行 `python -m py_compile scripts/run_ablation_eval.py src/observability/evaluation/ir_metrics.py`。
+
+### H3.6 / Task 5：MMDocRAG Evaluation
+- **目标**：新增多模态文档 RAG 评测脚本，在不大幅改动主链路的前提下，对检索质量、多模态证据召回、答案正确性、忠实度、引用可靠性和工程延迟进行端到端量化。
+- **前置依赖**：D2（DenseRetriever）、D3（SparseRetriever）、D5（HybridSearch）、D6（Reranker）、H3.5（Ablation Evaluation）。
+- **修改文件**：
+  - `scripts/run_mmdocrag_eval.py`（新增：MMDocRAG 评测 CLI）
+  - `src/observability/evaluation/multimodal_metrics.py`
+  - `src/observability/evaluation/generation_metrics.py`
+  - `src/observability/evaluation/citation_metrics.py`
+  - `tests/fixtures/mmdocrag_golden_test_set.json`
+  - `tests/unit/test_multimodal_metrics.py`
+  - `tests/unit/test_generation_metrics.py`
+  - `tests/unit/test_citation_metrics.py`
+  - `README.md`、`DEV_SPEC.md`（补充说明）
+- **新增 optional schema 字段**：
+  - `question_type`
+  - `reference_answer`
+  - `expected_pages`
+  - `expected_modalities`
+  - `expected_evidence`
+- **实现指标**：
+  - Retrieval Quality：`recall@k`、`ndcg@k`
+  - Multimodal Capability：`modality_recall@k`、`image_hit@k`、`table_hit@k`
+  - Answer Quality：`answer_correctness`（可选 LLM-as-Judge）
+  - Reliability：`faithfulness`（可选 LLM-as-Judge）、`citation_accuracy`
+  - Engineering Efficiency：`retrieval_latency_ms`、`generation_latency_ms`、`end_to_end_latency_ms`
+- **输出格式**：
+  - JSON：保存到 `eval/results/{timestamp}_mmdocrag.json`，包含每个 mode 的 aggregate metrics 与 query-level 明细。
+  - Markdown：开启 `--markdown` 时输出同名 `.md` 汇总表。
+- **验收标准**：
+  - 旧 `golden_test_set.json` 和 `scripts/run_ablation_eval.py` 不受影响。
+  - 所有新增 schema 字段均为 optional；缺失标注时对应指标跳过，不参与平均值。
+  - 未开启 LLM Judge 或无 API Key 时，`answer_correctness` 与 `faithfulness` 自动跳过，不影响检索、多模态和引用指标。
+- **测试方法**：
+  - `pytest -q tests/unit/test_multimodal_metrics.py tests/unit/test_generation_metrics.py tests/unit/test_citation_metrics.py`
+  - `python -m py_compile scripts/run_mmdocrag_eval.py src/observability/evaluation/multimodal_metrics.py src/observability/evaluation/generation_metrics.py src/observability/evaluation/citation_metrics.py`
 
 ### H4：评估面板页面
 - **目标**：实现 Dashboard 评估面板页面（运行评估、查看指标、历史对比）。

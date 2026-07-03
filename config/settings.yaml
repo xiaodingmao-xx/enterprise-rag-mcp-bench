@@ -125,6 +125,16 @@ ingestion:
   chunk_overlap: 200
   splitter: "recursive"  # Options: recursive, semantic, fixed_length
   batch_size: 20
+  supported_extensions:
+    - ".pdf"
+    - ".md"
+    - ".txt"
+    - ".html"
+    - ".htm"
+    - ".docx"
+    - ".py"
+    - ".js"
+    - ".java"
 
   # Document Quality Gate
   document_quality:

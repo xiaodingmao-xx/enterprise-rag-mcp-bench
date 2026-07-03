@@ -19,6 +19,18 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 # Default absolute path to settings.yaml
 DEFAULT_SETTINGS_PATH: Path = REPO_ROOT / "config" / "settings.yaml"
 
+DEFAULT_SUPPORTED_EXTENSIONS: List[str] = [
+    ".pdf",
+    ".md",
+    ".txt",
+    ".html",
+    ".htm",
+    ".docx",
+    ".py",
+    ".js",
+    ".java",
+]
+
 _ENV_PLACEHOLDER_PATTERN = re.compile(
     r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}"
 )
@@ -106,6 +118,25 @@ def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     if not isinstance(value, list):
         raise SettingsError(f"Expected list for field: {path}.{key}")
     return value
+
+
+def _normalise_extensions(value: Any, path: str) -> List[str]:
+    if value is None:
+        return DEFAULT_SUPPORTED_EXTENSIONS.copy()
+    if not isinstance(value, list):
+        raise SettingsError(f"Expected list for field: {path}")
+
+    extensions: List[str] = []
+    for item in value:
+        extension = str(item).strip().lower()
+        if not extension:
+            continue
+        if not extension.startswith("."):
+            extension = f".{extension}"
+        if extension not in extensions:
+            extensions.append(extension)
+
+    return extensions or DEFAULT_SUPPORTED_EXTENSIONS.copy()
 
 
 @dataclass(frozen=True)
@@ -198,10 +229,9 @@ class IngestionSettings:
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
     document_quality: Optional[Dict[str, Any]] = None
-
-
-    metadata_enricher: Optional[Dict[str, Any]] = None
-    document_quality: Optional[Dict[str, Any]] = None
+    supported_extensions: List[str] = field(
+        default_factory=lambda: DEFAULT_SUPPORTED_EXTENSIONS.copy()
+    )
 
 
 @dataclass(frozen=True)
@@ -260,6 +290,10 @@ class Settings:
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
                 document_quality=ingestion.get("document_quality"),
+                supported_extensions=_normalise_extensions(
+                    ingestion.get("supported_extensions"),
+                    "ingestion.supported_extensions",
+                ),
             )
 
         if ingestion_settings is not None:

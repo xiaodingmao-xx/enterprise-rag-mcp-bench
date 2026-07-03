@@ -4,7 +4,7 @@ This module implements the main pipeline that orchestrates the complete
 document ingestion flow:
     1. File Integrity Check (SHA256 skip check)
     2. Document Quality Check (PDF text-layer preflight)
-    3. Document Loading (PDF → Document)
+    3. Document Loading (multi-format file → Document)
     4. Chunking (Document → Chunks)
     5. Transform (Refine + Enrich + Caption)
     6. Encoding (Dense + Sparse vectors)
@@ -34,7 +34,7 @@ from src.libs.loader.document_quality import (
     DocumentQualityReport,
     PdfQualityChecker,
 )
-from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.loader_factory import LoaderFactory
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
@@ -175,12 +175,18 @@ class IngestionPipeline:
             f"min_ratio={self.document_quality_checker.min_effective_char_ratio})"
         )
         
-        # Stage 3: Loader
-        self.loader = PdfLoader(
-            extract_images=True,
-            image_storage_dir=str(resolve_path(f"data/images/{collection}"))
+        # Stage 3: LoaderFactory
+        self.loader = None
+        self.loader_factory = LoaderFactory
+        self.loader_options = {
+            "extract_images": True,
+            "image_storage_dir": str(resolve_path(f"data/images/{collection}")),
+        }
+        supported_extensions = self.loader_factory.get_supported_extensions(settings)
+        logger.info(
+            "  ✓ LoaderFactory initialized "
+            f"(supported={', '.join(supported_extensions)})"
         )
-        logger.info("  ✓ PdfLoader initialized")
         
         # Stage 4: Chunker
         self.chunker = DocumentChunker(settings)
@@ -365,6 +371,19 @@ class IngestionPipeline:
         except Exception as exc:
             logger.warning(f"Failed to delete stale vectors for {source_path}: {exc}")
             return 0
+
+    def _get_loader_for_file(self, file_path: Path):
+        """Create the proper loader for a file, unless a test injected one."""
+
+        injected_loader = getattr(self, "loader", None)
+        if injected_loader is not None:
+            return injected_loader
+
+        return self.loader_factory.get_loader(
+            file_path,
+            settings=self.settings,
+            **getattr(self, "loader_options", {}),
+        )
     
     def run(
         self,
@@ -428,7 +447,14 @@ class IngestionPipeline:
 
             _t0 = time.monotonic()
             quality_checker = getattr(self, "document_quality_checker", None)
-            if quality_checker is not None:
+            if file_path.suffix.lower() != ".pdf":
+                quality_report = DocumentQualityReport(
+                    checked=False,
+                    passed=True,
+                    reason="non_pdf_quality_check_skipped",
+                    file_path=str(file_path),
+                )
+            elif quality_checker is not None:
                 quality_report = quality_checker.check(file_path)
             else:
                 quality_report = DocumentQualityReport(
@@ -477,7 +503,9 @@ class IngestionPipeline:
             _notify("load", 3)
             
             _t0 = time.monotonic()
-            document = self.loader.load(str(file_path))
+            get_loader = getattr(self, "_get_loader_for_file", None)
+            loader = get_loader(file_path) if callable(get_loader) else self.loader
+            document = loader.load(str(file_path))
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text
@@ -490,13 +518,16 @@ class IngestionPipeline:
             
             stages["loading"] = {
                 "doc_id": document.id,
+                "loader": loader.__class__.__name__,
+                "file_type": document.metadata.get("file_type", document.metadata.get("doc_type", "")),
                 "text_length": len(document.text),
                 "image_count": image_count
             }
             if trace is not None:
                 trace.record_stage("load", {
-                    "method": "markitdown",
+                    "method": loader.__class__.__name__,
                     "doc_id": document.id,
+                    "file_type": document.metadata.get("file_type", document.metadata.get("doc_type", "")),
                     "text_length": len(document.text),
                     "image_count": image_count,
                     "text_preview": document.text,

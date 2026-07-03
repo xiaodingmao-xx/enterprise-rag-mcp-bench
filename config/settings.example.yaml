@@ -71,6 +71,16 @@ ingestion:
   chunk_overlap: 200
   splitter: "recursive"
   batch_size: 20
+  supported_extensions:
+    - ".pdf"
+    - ".md"
+    - ".txt"
+    - ".html"
+    - ".htm"
+    - ".docx"
+    - ".py"
+    - ".js"
+    - ".java"
 
   document_quality:
     enabled: true
