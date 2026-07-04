@@ -7,8 +7,6 @@ callback at each pipeline stage with (stage_name, current, total).
 from typing import List, Tuple
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.core.trace.trace_context import TraceContext
 from src.core.types import Document, Chunk
 from src.ingestion.pipeline import IngestionPipeline
@@ -175,3 +173,15 @@ class TestPipelineProgressCallback:
         assert result.stages["quality"]["passed"] is False
         fp.loader.load.assert_not_called()
         fp.integrity_checker.mark_failed.assert_called_once()
+
+    def test_hash_failure_does_not_mark_failed_without_hash(self) -> None:
+        fp = _make_fake_pipeline()
+        fp.integrity_checker.compute_sha256.side_effect = OSError("hash failed")
+
+        result = IngestionPipeline.run(fp, "test.pdf")
+
+        assert not result.success
+        assert result.doc_id is None
+        assert "hash failed" in result.error
+        fp.integrity_checker.mark_failed.assert_not_called()
+        fp.integrity_checker.should_skip.assert_not_called()

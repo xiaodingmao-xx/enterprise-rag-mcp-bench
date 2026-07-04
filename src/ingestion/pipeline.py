@@ -23,7 +23,7 @@ import hashlib
 import time
 
 from src.core.settings import Settings, load_settings, resolve_path
-from src.core.types import Document, Chunk
+from src.core.types import Chunk
 from src.core.trace.trace_context import TraceContext
 from src.observability.logger import get_logger
 
@@ -36,7 +36,6 @@ from src.libs.loader.document_quality import (
 )
 from src.libs.loader.loader_factory import LoaderFactory
 from src.libs.embedding.embedding_factory import EmbeddingFactory
-from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
 # Ingestion layer imports
 from src.ingestion.chunking.document_chunker import DocumentChunker
@@ -810,13 +809,14 @@ class IngestionPipeline:
             
         except Exception as e:
             logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
-            if "file_hash" in locals():
-                self.integrity_checker.mark_failed(file_hash, str(file_path), str(e))
+            failed_hash = locals().get("file_hash")
+            if failed_hash:
+                self.integrity_checker.mark_failed(failed_hash, str(file_path), str(e))
             
             return PipelineResult(
                 success=False,
                 file_path=str(file_path),
-                doc_id=file_hash if 'file_hash' in locals() else None,
+                doc_id=failed_hash,
                 error=str(e),
                 stages=stages
             )

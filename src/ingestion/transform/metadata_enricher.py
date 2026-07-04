@@ -1,5 +1,7 @@
 """Metadata enrichment transform: rule-based + optional LLM enhancement."""
 
+from __future__ import annotations
+
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Dict, Any, Tuple
