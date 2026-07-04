@@ -103,12 +103,17 @@ class TraceContext:
         Returns:
             Dictionary with all trace data.
         """
+        total_elapsed_ms = self.elapsed_ms()
+        rounded_elapsed_ms = round(total_elapsed_ms, 2)
+        if self.finished_at is not None and rounded_elapsed_ms == 0:
+            rounded_elapsed_ms = 0.01
+
         return {
             "trace_id": self.trace_id,
             "trace_type": self.trace_type,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "total_elapsed_ms": round(self.elapsed_ms(), 2),
+            "total_elapsed_ms": rounded_elapsed_ms,
             "stages": list(self.stages),
             "metadata": dict(self.metadata),
         }

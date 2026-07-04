@@ -84,6 +84,10 @@ rerank:
   provider: "none"  # Options: none, cross_encoder, llm
   model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
   top_k: 5
+  candidate_top_k: 20
+  output_top_k: 5
+  timeout_seconds: 10
+  fallback_on_timeout: true
 
 # =============================================================================
 # Evaluation Configuration

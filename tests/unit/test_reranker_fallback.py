@@ -7,9 +7,11 @@ This module tests the CoreReranker class with focus on:
 4. Type conversion between RetrievalResult and reranker format
 """
 
+import time
+
 import pytest
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.core.query_engine.reranker import (
     CoreReranker,
@@ -18,6 +20,7 @@ from src.core.query_engine.reranker import (
     RerankResult,
     create_core_reranker,
 )
+from src.core.trace.trace_context import TraceContext
 from src.core.types import RetrievalResult
 from src.libs.reranker.base_reranker import BaseReranker, NoneReranker
 
@@ -48,6 +51,7 @@ class FakeReranker(BaseReranker):
         self.call_count = 0
         self.last_query = None
         self.last_candidates = None
+        self.last_kwargs = None
     
     def rerank(
         self,
@@ -59,6 +63,7 @@ class FakeReranker(BaseReranker):
         self.call_count += 1
         self.last_query = query
         self.last_candidates = candidates
+        self.last_kwargs = kwargs
         
         # Reverse order and add rerank_score
         reranked = []
@@ -84,6 +89,38 @@ class FailingReranker(BaseReranker):
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         raise RuntimeError(self.error_message)
+
+
+class SlowReranker(BaseReranker):
+    """Reranker that blocks longer than the configured timeout."""
+
+    def __init__(self, sleep_seconds: float = 0.2):
+        self.sleep_seconds = sleep_seconds
+        self.call_count = 0
+
+    def rerank(
+        self,
+        query: str,
+        candidates: List[Dict[str, Any]],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        self.call_count += 1
+        time.sleep(self.sleep_seconds)
+        return candidates
+
+
+class InvalidOutputReranker(BaseReranker):
+    """Reranker that returns malformed output."""
+
+    def rerank(
+        self,
+        query: str,
+        candidates: List[Dict[str, Any]],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        return []
 
 
 @pytest.fixture
@@ -175,7 +212,7 @@ class TestCoreRerankerNormalFlow:
         fake_reranker = FakeReranker()
         reranker = CoreReranker(settings=mock_settings, reranker=fake_reranker)
         
-        result = reranker.rerank("test query", sample_results)
+        reranker.rerank("test query", sample_results)
         
         assert fake_reranker.call_count == 1
         assert fake_reranker.last_query == "test query"
@@ -245,6 +282,49 @@ class TestCoreRerankerNormalFlow:
         result = reranker.rerank("test query", sample_results, top_k=1)
         
         assert len(result.results) == 1
+
+    def test_rerank_limits_candidates_and_output(self, mock_settings, sample_results):
+        """Test candidate_top_k limits input and output_top_k limits output."""
+        fake_reranker = FakeReranker()
+        config = RerankConfig(
+            enabled=True,
+            top_k=5,
+            candidate_top_k=2,
+            output_top_k=1,
+        )
+        reranker = CoreReranker(
+            settings=mock_settings,
+            reranker=fake_reranker,
+            config=config,
+        )
+
+        result = reranker.rerank("test query", sample_results)
+
+        assert len(fake_reranker.last_candidates) == 2
+        assert [c["id"] for c in fake_reranker.last_candidates] == [
+            "chunk_001",
+            "chunk_002",
+        ]
+        assert len(result.results) == 1
+        assert result.results[0].chunk_id == "chunk_002"
+
+    def test_rerank_does_not_inject_provider_top_k_kwarg(
+        self,
+        mock_settings,
+        sample_results,
+    ):
+        """Test CoreReranker keeps provider kwargs compatible with LLM rerank."""
+        fake_reranker = FakeReranker()
+        config = RerankConfig(enabled=True, top_k=5, output_top_k=1)
+        reranker = CoreReranker(
+            settings=mock_settings,
+            reranker=fake_reranker,
+            config=config,
+        )
+
+        reranker.rerank("test query", sample_results, top_k=1)
+
+        assert fake_reranker.last_kwargs == {}
 
 
 # =============================================================================
@@ -325,6 +405,104 @@ class TestCoreRerankerFallback:
         
         assert result.original_order is not None
         assert len(result.original_order) == 3
+
+    def test_timeout_fallback_returns_original_results_and_trace(
+        self,
+        mock_settings,
+        sample_results,
+    ):
+        """Test timeout uses original hybrid-search order and records trace metadata."""
+        slow_reranker = SlowReranker(sleep_seconds=0.2)
+        config = RerankConfig(
+            enabled=True,
+            top_k=2,
+            candidate_top_k=3,
+            output_top_k=2,
+            timeout_seconds=0.01,
+            fallback_on_timeout=True,
+        )
+        reranker = CoreReranker(
+            settings=mock_settings,
+            reranker=slow_reranker,
+            config=config,
+        )
+        trace = TraceContext(trace_type="query")
+
+        started = time.monotonic()
+        result = reranker.rerank("test query", sample_results, trace=trace)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.15
+        assert result.used_fallback is True
+        assert result.fallback_reason is not None
+        assert "timeout" in result.fallback_reason
+        assert [r.chunk_id for r in result.results] == ["chunk_001", "chunk_002"]
+        assert trace.metadata["fallback_reason"] == "timeout"
+        assert trace.metadata["timeout_seconds"] == 0.01
+        assert trace.metadata["candidate_count"] == 3
+        rerank_stage = trace.get_stage_data("rerank")
+        assert rerank_stage is not None
+        assert rerank_stage["used_fallback"] is True
+        assert rerank_stage["fallback_reason"] == "timeout"
+
+    def test_exception_fallback_records_reason_and_does_not_raise(
+        self,
+        mock_settings,
+        sample_results,
+    ):
+        """Test backend exception falls back without failing the query path."""
+        failing_reranker = FailingReranker(error_message="Backend crashed")
+        config = RerankConfig(
+            enabled=True,
+            top_k=2,
+            candidate_top_k=3,
+            output_top_k=2,
+            fallback_on_timeout=True,
+        )
+        reranker = CoreReranker(
+            settings=mock_settings,
+            reranker=failing_reranker,
+            config=config,
+        )
+        trace = TraceContext(trace_type="query")
+
+        result = reranker.rerank("test query", sample_results, trace=trace)
+
+        assert result.used_fallback is True
+        assert "Backend crashed" in result.fallback_reason
+        assert [r.chunk_id for r in result.results] == ["chunk_001", "chunk_002"]
+        assert trace.metadata["fallback_reason"] == "rerank_error"
+        assert trace.metadata["candidate_count"] == 3
+
+    def test_invalid_output_fallback_returns_original_top_k(
+        self,
+        mock_settings,
+        sample_results,
+    ):
+        """Test abnormal rerank output falls back to original Hybrid Search top-k."""
+        invalid_reranker = InvalidOutputReranker()
+        config = RerankConfig(
+            enabled=True,
+            top_k=2,
+            candidate_top_k=3,
+            output_top_k=2,
+            fallback_on_timeout=True,
+        )
+        reranker = CoreReranker(
+            settings=mock_settings,
+            reranker=invalid_reranker,
+            config=config,
+        )
+
+        result = reranker.rerank("test query", sample_results)
+
+        assert result.used_fallback is True
+        assert result.fallback_reason is not None
+        assert "invalid_rerank_output" in result.fallback_reason
+        assert [r.chunk_id for r in result.results] == ["chunk_001", "chunk_002"]
+        for item in result.results:
+            assert item.metadata["rerank_fallback"] is True
+            assert item.metadata["fallback_reason"] == "invalid_rerank_output"
 
 
 # =============================================================================

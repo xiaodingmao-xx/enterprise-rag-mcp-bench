@@ -415,8 +415,11 @@ class QueryKnowledgeHubTool:
         if self._hybrid_search is None:
             raise RuntimeError("HybridSearch not initialized")
         
-        # Use a larger initial retrieval for reranking
-        initial_top_k = top_k * 2 if self.config.enable_rerank else top_k
+        # Pull enough hybrid-search candidates for the reranker, then CoreReranker
+        # will cap the actual rerank input with candidate_top_k.
+        rerank_config = getattr(getattr(self._reranker, "config", None), "candidate_top_k", None)
+        candidate_top_k = rerank_config if isinstance(rerank_config, int) and rerank_config > 0 else top_k * 2
+        initial_top_k = max(top_k, candidate_top_k) if self.config.enable_rerank else top_k
         
         try:
             results = self._hybrid_search.search(

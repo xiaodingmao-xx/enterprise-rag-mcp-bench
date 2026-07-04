@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -34,20 +36,42 @@ class RerankError(RuntimeError):
     """Raised when reranking fails."""
 
 
+class RerankTimeoutError(RerankError):
+    """Raised when reranking exceeds the configured timeout."""
+
+
 @dataclass
 class RerankConfig:
     """Configuration for CoreReranker.
     
     Attributes:
         enabled: Whether reranking is enabled
-        top_k: Number of results to return after reranking
-        timeout: Timeout for reranker backend (seconds)
+        top_k: Legacy output top-k value kept for compatibility
+        candidate_top_k: Maximum number of hybrid-search candidates to rerank
+        output_top_k: Number of results to return after reranking
+        timeout: Legacy timeout field kept for compatibility
+        timeout_seconds: Timeout for reranker backend (seconds)
         fallback_on_error: Whether to return original order on error
+        fallback_on_timeout: Whether to fallback on timeout/error/invalid output
     """
     enabled: bool = True
     top_k: int = 5
+    candidate_top_k: int = 20
+    output_top_k: int = 0
     timeout: float = 30.0
+    timeout_seconds: float = 0.0
     fallback_on_error: bool = True
+    fallback_on_timeout: bool = True
+
+    def __post_init__(self) -> None:
+        self.top_k = max(1, int(self.top_k))
+        self.candidate_top_k = max(1, int(self.candidate_top_k))
+        self.output_top_k = max(1, int(self.output_top_k or self.top_k))
+        self.timeout = max(0.001, float(self.timeout))
+        self.timeout_seconds = max(
+            0.001,
+            float(self.timeout_seconds or self.timeout),
+        )
 
 
 @dataclass
@@ -139,15 +163,76 @@ class CoreReranker:
         """
         try:
             rerank_settings = settings.rerank
+            if rerank_settings is None:
+                return RerankConfig(enabled=False)
+
+            top_k = self._positive_int(getattr(rerank_settings, "top_k", 5), 5)
+            timeout_seconds = self._positive_float(
+                getattr(
+                    rerank_settings,
+                    "timeout_seconds",
+                    getattr(rerank_settings, "timeout", 30.0),
+                ),
+                30.0,
+            )
+            fallback_on_timeout = bool(
+                getattr(
+                    rerank_settings,
+                    "fallback_on_timeout",
+                    getattr(rerank_settings, "fallback_on_error", True),
+                )
+            )
             return RerankConfig(
-                enabled=bool(rerank_settings.enabled) if rerank_settings else False,
-                top_k=int(rerank_settings.top_k) if rerank_settings and hasattr(rerank_settings, 'top_k') else 5,
-                timeout=float(getattr(rerank_settings, 'timeout', 30.0)) if rerank_settings else 30.0,
-                fallback_on_error=True,
+                enabled=bool(rerank_settings.enabled),
+                top_k=top_k,
+                candidate_top_k=self._positive_int(
+                    getattr(rerank_settings, "candidate_top_k", max(top_k * 2, top_k)),
+                    max(top_k * 2, top_k),
+                ),
+                output_top_k=self._positive_int(
+                    getattr(rerank_settings, "output_top_k", top_k),
+                    top_k,
+                ),
+                timeout=timeout_seconds,
+                timeout_seconds=timeout_seconds,
+                fallback_on_error=bool(
+                    getattr(rerank_settings, "fallback_on_error", fallback_on_timeout)
+                ),
+                fallback_on_timeout=fallback_on_timeout,
             )
         except AttributeError:
             logger.warning("Missing rerank configuration, using defaults (disabled)")
             return RerankConfig(enabled=False)
+
+    @staticmethod
+    def _positive_int(value: Any, default: int) -> int:
+        if isinstance(value, bool):
+            parsed = default
+        elif isinstance(value, int):
+            parsed = value
+        elif isinstance(value, str) and value.strip():
+            try:
+                parsed = int(value)
+            except ValueError:
+                parsed = default
+        else:
+            parsed = default
+        return max(1, parsed)
+
+    @staticmethod
+    def _positive_float(value: Any, default: float) -> float:
+        if isinstance(value, bool):
+            parsed = default
+        elif isinstance(value, (int, float)):
+            parsed = float(value)
+        elif isinstance(value, str) and value.strip():
+            try:
+                parsed = float(value)
+            except ValueError:
+                parsed = default
+        else:
+            parsed = default
+        return max(0.001, parsed)
     
     def _get_reranker_type(self) -> str:
         """Get the type name of the current reranker backend.
@@ -231,6 +316,154 @@ class CoreReranker:
                 ))
         
         return results
+
+    def _call_backend_with_timeout(
+        self,
+        *,
+        query: str,
+        candidates: List[Dict[str, Any]],
+        trace: Optional[Any],
+        timeout_seconds: float,
+        kwargs: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Run the synchronous provider call behind a real timeout."""
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="core-rerank")
+        future = executor.submit(
+            self._reranker.rerank,
+            query=query,
+            candidates=candidates,
+            trace=trace,
+            **kwargs,
+        )
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise RerankTimeoutError(
+                f"Reranking timed out after {timeout_seconds:.3f}s"
+            ) from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _validate_rerank_output(
+        self,
+        reranked_candidates: Any,
+        input_candidates: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Validate provider output before converting it back to results."""
+        if not isinstance(reranked_candidates, list):
+            raise RerankError(
+                f"Reranker returned {type(reranked_candidates).__name__}, expected list"
+            )
+        if input_candidates and not reranked_candidates:
+            raise RerankError("Reranker returned no candidates")
+
+        for index, candidate in enumerate(reranked_candidates):
+            if not isinstance(candidate, dict):
+                raise RerankError(
+                    f"Reranker output at index {index} is "
+                    f"{type(candidate).__name__}, expected dict"
+                )
+            if "id" not in candidate:
+                raise RerankError(f"Reranker output at index {index} missing 'id'")
+
+        return reranked_candidates
+
+    def _record_rerank_trace(
+        self,
+        trace: Optional[Any],
+        *,
+        data: Dict[str, Any],
+        elapsed_ms: Optional[float],
+    ) -> None:
+        if trace is not None and hasattr(trace, "record_stage"):
+            trace.record_stage("rerank", data, elapsed_ms=elapsed_ms)
+
+    def _record_fallback_metadata(
+        self,
+        trace: Optional[Any],
+        *,
+        fallback_reason: str,
+        timeout_seconds: float,
+        candidate_count: int,
+    ) -> None:
+        metadata = getattr(trace, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata["rerank_fallback"] = True
+            metadata["fallback_reason"] = fallback_reason
+            metadata["timeout_seconds"] = timeout_seconds
+            metadata["candidate_count"] = candidate_count
+
+    def _fallback_result(
+        self,
+        *,
+        results: List[RetrievalResult],
+        effective_top_k: int,
+        reason: str,
+        detail: str,
+        timeout_seconds: float,
+        candidate_count: int,
+        elapsed_ms: float,
+        trace: Optional[Any],
+    ) -> RerankResult:
+        """Build a safe fallback result in original hybrid-search order."""
+        logger.warning(
+            "Reranker fallback: reason=%s timeout_seconds=%.3f "
+            "candidate_count=%s detail=%s",
+            reason,
+            timeout_seconds,
+            candidate_count,
+            detail,
+        )
+
+        self._record_fallback_metadata(
+            trace,
+            fallback_reason=reason,
+            timeout_seconds=timeout_seconds,
+            candidate_count=candidate_count,
+        )
+
+        fallback_results = []
+        for result in results[:effective_top_k]:
+            fallback_results.append(RetrievalResult(
+                chunk_id=result.chunk_id,
+                score=result.score,
+                text=result.text,
+                metadata={
+                    **result.metadata,
+                    "reranked": False,
+                    "rerank_fallback": True,
+                    "fallback_reason": reason,
+                    "timeout_seconds": timeout_seconds,
+                    "candidate_count": candidate_count,
+                },
+            ))
+
+        self._record_rerank_trace(
+            trace,
+            data={
+                "method": self._reranker_type,
+                "provider": self._reranker_type,
+                "input_count": len(results),
+                "candidate_count": candidate_count,
+                "candidate_top_k": self.config.candidate_top_k,
+                "output_top_k": effective_top_k,
+                "output_count": len(fallback_results),
+                "timeout_seconds": timeout_seconds,
+                "used_fallback": True,
+                "fallback_reason": reason,
+                "fallback_detail": detail,
+            },
+            elapsed_ms=elapsed_ms,
+        )
+
+        return RerankResult(
+            results=fallback_results,
+            used_fallback=True,
+            fallback_reason=f"{reason}: {detail}",
+            reranker_type=self._reranker_type,
+            original_order=results[:],
+        )
     
     def rerank(
         self,
@@ -252,7 +485,10 @@ class CoreReranker:
         Returns:
             RerankResult containing reranked results and metadata.
         """
-        effective_top_k = top_k if top_k is not None else self.config.top_k
+        effective_top_k = self._positive_int(
+            top_k if top_k is not None else self.config.output_top_k,
+            self.config.output_top_k,
+        )
         
         # Early return for empty or single results
         if not results:
@@ -278,35 +514,57 @@ class CoreReranker:
                 original_order=results[:],
             )
         
-        # Convert to reranker input format
-        candidates = self._results_to_candidates(results)
+        # Only rerank the first candidate_top_k hybrid-search candidates.
+        candidate_results = results[:self.config.candidate_top_k]
+        candidates = self._results_to_candidates(candidate_results)
+        candidate_count = len(candidates)
         
         # Attempt reranking
+        _t0 = time.monotonic()
         try:
-            logger.debug(f"Reranking {len(candidates)} candidates with {self._reranker_type}")
-            _t0 = time.monotonic()
-            reranked_candidates = self._reranker.rerank(
+            logger.debug(
+                "Reranking %s/%s candidates with %s",
+                candidate_count,
+                len(results),
+                self._reranker_type,
+            )
+            reranked_candidates = self._call_backend_with_timeout(
                 query=query,
                 candidates=candidates,
                 trace=trace,
-                **kwargs,
+                timeout_seconds=self.config.timeout_seconds,
+                kwargs=dict(kwargs),
             )
             _elapsed = (time.monotonic() - _t0) * 1000.0
+
+            reranked_candidates = self._validate_rerank_output(
+                reranked_candidates,
+                candidates,
+            )
             
             # Convert back to RetrievalResult
-            reranked_results = self._candidates_to_results(reranked_candidates, results)
+            reranked_results = self._candidates_to_results(
+                reranked_candidates,
+                candidate_results,
+            )
             
-            # Apply top_k limit
+            # Apply output top-k limit.
             final_results = reranked_results[:effective_top_k]
             
             logger.info(f"Reranking complete: {len(final_results)} results returned")
             
-            if trace is not None:
-                trace.record_stage("rerank", {
+            self._record_rerank_trace(
+                trace,
+                data={
                     "method": self._reranker_type,
                     "provider": self._reranker_type,
-                    "input_count": len(candidates),
+                    "input_count": len(results),
+                    "candidate_count": candidate_count,
+                    "candidate_top_k": self.config.candidate_top_k,
+                    "output_top_k": effective_top_k,
                     "output_count": len(final_results),
+                    "timeout_seconds": self.config.timeout_seconds,
+                    "used_fallback": False,
                     "chunks": [
                         {
                             "chunk_id": r.chunk_id,
@@ -316,7 +574,9 @@ class CoreReranker:
                         }
                         for r in final_results
                     ],
-                }, elapsed_ms=_elapsed)
+                },
+                elapsed_ms=_elapsed,
+            )
             
             return RerankResult(
                 results=final_results,
@@ -326,32 +586,44 @@ class CoreReranker:
             )
             
         except Exception as e:
-            logger.warning(f"Reranking failed, using fallback: {e}")
-            
-            if self.config.fallback_on_error:
-                # Return original order as fallback
-                fallback_results = []
-                for result in results[:effective_top_k]:
-                    fallback_results.append(RetrievalResult(
-                        chunk_id=result.chunk_id,
-                        score=result.score,
-                        text=result.text,
-                        metadata={
-                            **result.metadata,
-                            "reranked": False,
-                            "rerank_fallback": True,
-                        },
-                    ))
-                
-                return RerankResult(
-                    results=fallback_results,
-                    used_fallback=True,
-                    fallback_reason=str(e),
-                    reranker_type=self._reranker_type,
-                    original_order=results[:],
-                )
+            elapsed_ms = (time.monotonic() - _t0) * 1000.0
+            if isinstance(e, RerankTimeoutError):
+                reason = "timeout"
+            elif isinstance(e, RerankError):
+                reason = "invalid_rerank_output"
             else:
-                raise RerankError(f"Reranking failed and fallback disabled: {e}") from e
+                reason = "rerank_error"
+
+            if self.config.fallback_on_timeout and self.config.fallback_on_error:
+                return self._fallback_result(
+                    results=results,
+                    effective_top_k=effective_top_k,
+                    reason=reason,
+                    detail=str(e),
+                    timeout_seconds=self.config.timeout_seconds,
+                    candidate_count=candidate_count,
+                    elapsed_ms=elapsed_ms,
+                    trace=trace,
+                )
+
+            self._record_rerank_trace(
+                trace,
+                data={
+                    "method": self._reranker_type,
+                    "provider": self._reranker_type,
+                    "input_count": len(results),
+                    "candidate_count": candidate_count,
+                    "candidate_top_k": self.config.candidate_top_k,
+                    "output_top_k": effective_top_k,
+                    "output_count": 0,
+                    "timeout_seconds": self.config.timeout_seconds,
+                    "used_fallback": False,
+                    "fallback_reason": reason,
+                    "fallback_detail": str(e),
+                },
+                elapsed_ms=elapsed_ms,
+            )
+            raise RerankError(f"Reranking failed and fallback disabled: {e}") from e
     
     @property
     def reranker_type(self) -> str:

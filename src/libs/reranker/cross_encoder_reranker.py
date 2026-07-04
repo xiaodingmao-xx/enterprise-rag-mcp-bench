@@ -8,6 +8,8 @@ and API-based endpoints.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from src.libs.reranker.base_reranker import BaseReranker
@@ -39,7 +41,7 @@ class CrossEncoderReranker(BaseReranker):
         self,
         settings: Any,
         model: Optional[Any] = None,
-        timeout: float = 10.0,
+        timeout: Optional[float] = None,
         **kwargs: Any
     ) -> None:
         """Initialize the Cross-Encoder Reranker.
@@ -53,7 +55,7 @@ class CrossEncoderReranker(BaseReranker):
             **kwargs: Additional provider-specific parameters.
         """
         self.settings = settings
-        self.timeout = timeout
+        self.timeout = self._resolve_timeout(settings, timeout)
         self.kwargs = kwargs
         
         # Initialize or inject model
@@ -67,6 +69,22 @@ class CrossEncoderReranker(BaseReranker):
                 raise CrossEncoderRerankError(
                     f"Failed to initialize Cross-Encoder model: {e}"
                 ) from e
+
+    def _resolve_timeout(self, settings: Any, timeout: Optional[float]) -> float:
+        """Resolve timeout from explicit argument or settings."""
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            return float(timeout)
+
+        rerank_settings = getattr(settings, "rerank", None)
+        configured_timeout = getattr(
+            rerank_settings,
+            "timeout_seconds",
+            getattr(rerank_settings, "timeout", None),
+        )
+        if isinstance(configured_timeout, (int, float)) and configured_timeout > 0:
+            return float(configured_timeout)
+
+        return 10.0
     
     def _get_model_name_from_settings(self, settings: Any) -> str:
         """Extract model name from settings.
@@ -219,13 +237,35 @@ class CrossEncoderReranker(BaseReranker):
         """
         try:
             # Use model.predict() to score all pairs in batch
-            scores = self.model.predict(pairs)
+            executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cross-encoder-predict",
+            )
+            future = executor.submit(self.model.predict, pairs)
+            try:
+                scores = future.result(timeout=self.timeout)
+            except FuturesTimeoutError as exc:
+                future.cancel()
+                raise CrossEncoderRerankError(
+                    f"Cross-Encoder predict timed out after {self.timeout:.3f}s"
+                ) from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
             
             # Convert numpy array to list if needed
             if hasattr(scores, 'tolist'):
                 scores = scores.tolist()
+
+            if not isinstance(scores, (list, tuple)):
+                raise CrossEncoderRerankError(
+                    f"Cross-Encoder returned {type(scores).__name__}, expected list"
+                )
+            if len(scores) != len(pairs):
+                raise CrossEncoderRerankError(
+                    f"Cross-Encoder returned {len(scores)} scores for {len(pairs)} pairs"
+                )
             
-            return scores
+            return [float(score) for score in scores]
             
         except Exception as e:
             raise CrossEncoderRerankError(
@@ -248,6 +288,11 @@ class CrossEncoderReranker(BaseReranker):
         Returns:
             Sorted list of top_k candidates with 'rerank_score' field added.
         """
+        if len(scores) != len(candidates):
+            raise CrossEncoderRerankError(
+                f"Expected {len(candidates)} scores, got {len(scores)}"
+            )
+
         # Attach scores to candidates
         scored_candidates = []
         for candidate, score in zip(candidates, scores):

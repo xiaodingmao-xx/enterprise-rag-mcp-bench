@@ -151,6 +151,14 @@ def _int_or_default(value: Any, default: int, minimum: int = 0) -> int:
     return max(minimum, parsed)
 
 
+def _float_or_default(value: Any, default: float, minimum: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, parsed)
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     provider: str
@@ -202,6 +210,10 @@ class RerankSettings:
     provider: str
     model: str
     top_k: int
+    candidate_top_k: int = 20
+    output_top_k: int = 5
+    timeout_seconds: float = 30.0
+    fallback_on_timeout: bool = True
 
 
 @dataclass(frozen=True)
@@ -403,6 +415,8 @@ class Settings:
                 ),
             )
 
+        rerank_top_k = _require_int(rerank, "top_k", "rerank")
+
         settings = cls(
             llm=LLMSettings(
                 provider=_require_str(llm, "provider", "llm"),
@@ -441,7 +455,28 @@ class Settings:
                 enabled=_require_bool(rerank, "enabled", "rerank"),
                 provider=_require_str(rerank, "provider", "rerank"),
                 model=_require_str(rerank, "model", "rerank"),
-                top_k=_require_int(rerank, "top_k", "rerank"),
+                top_k=rerank_top_k,
+                candidate_top_k=_int_or_default(
+                    rerank.get("candidate_top_k"),
+                    max(rerank_top_k * 2, rerank_top_k),
+                    1,
+                ),
+                output_top_k=_int_or_default(
+                    rerank.get("output_top_k"),
+                    rerank_top_k,
+                    1,
+                ),
+                timeout_seconds=_float_or_default(
+                    rerank.get("timeout_seconds", rerank.get("timeout")),
+                    30.0,
+                    0.001,
+                ),
+                fallback_on_timeout=bool(
+                    rerank.get(
+                        "fallback_on_timeout",
+                        rerank.get("fallback_on_error", True),
+                    )
+                ),
             ),
             evaluation=EvaluationSettings(
                 enabled=_require_bool(evaluation, "enabled", "evaluation"),
