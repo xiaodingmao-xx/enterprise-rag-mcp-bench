@@ -235,8 +235,9 @@ def create_mcp_server(
             server_version=server_version,
         )
 
-    # Register default tools if requested
-    if register_tools:
+    # Register default tools for the normal server path. A caller-provided
+    # handler may already contain a custom tool set for tests or embedding.
+    if register_tools and not protocol_handler.tools:
         _register_default_tools(protocol_handler)
 
     # Create low-level server

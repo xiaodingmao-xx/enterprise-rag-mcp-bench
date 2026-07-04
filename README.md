@@ -137,7 +137,37 @@ vision_llm:
 
 真实 API Key 请放在本机 `.env` 或系统环境变量中，不要写入仓库。当前默认配置里的 `llm.api_key`、`embedding.api_key`、`vision_llm.api_key` 都会从环境变量读取。
 
-### 4. 摄取多格式文档
+### 4. 启动 MCP Server
+
+开发环境中可以直接用 module 方式启动真实的 MCP stdio server：
+
+```bash
+python -m src.mcp_server.server
+```
+
+安装项目后，也可以使用 console script：
+
+```bash
+mcp-server
+```
+
+MCP Client 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "modular-rag": {
+      "command": "python",
+      "args": ["-m", "src.mcp_server.server"],
+      "env": {
+        "OPENAI_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+### 5. 摄取多格式文档
 
 `scripts/ingest.py` 现在通过 `LoaderFactory` 自动识别文档类型。默认支持 `.pdf`、`.md`、`.txt`、`.html`、`.htm`、`.docx`、`.py`、`.js`、`.java`：
 
@@ -150,7 +180,7 @@ python scripts/ingest.py --path documents/guide.md --collection knowledge_base -
 
 `.doc` 这类旧版 Office 二进制格式暂不默认支持，建议先转换为 `.docx` 后再摄取。
 
-### 5. 结构化 Metadata Enrichment
+### 6. 结构化 Metadata Enrichment
 
 Ingestion 阶段会为每个 chunk 注入结构化 metadata，包含 `title`、`summary`、`tags`、`section_path`、`heading_path`、`page_range`、`table_ids`、`image_ids`、`entities`、`questions`、`enrichment_method` 和 `enrichment_cached`。默认走规则抽取，不依赖 LLM；开启 LLM 后会使用 JSON Prompt 生成增强结果，解析失败或预算超限时自动回退到规则结果。
 
@@ -172,7 +202,7 @@ ingestion:
 
 `ingestion.metadata_enrichment` 是新的推荐配置块；旧的 `ingestion.metadata_enricher` 仍保留兼容。缓存默认使用 SQLite，重复 chunk 会直接复用 enrichment 结果，减少 LLM 调用和重复规则计算。
 
-### 6. 消融评估（Ablation Evaluation）
+### 7. 消融评估（Ablation Evaluation）
 
 项目提供 `scripts/run_ablation_eval.py` 对比四种检索模式：`dense`、`bm25`、`hybrid`、`hybrid_rerank`。脚本会读取 golden test set，计算 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，并将结果保存到 `eval/results/{timestamp}.json`。
 
@@ -182,7 +212,7 @@ python scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --to
 
 默认数据集是 `tests/fixtures/golden_test_set.json`。测试集中可以用 `expected_chunk_ids` 做 chunk 级评估，也可以用 `expected_sources` 做来源文档级评估；未标注相关文档的 query 会被跳过，不参与聚合指标。
 
-### 7. 多模态文档评测（MMDocRAG Evaluation）
+### 8. 多模态文档评测（MMDocRAG Evaluation）
 
 项目新增 `scripts/run_mmdocrag_eval.py`，用于评估多模态文档 RAG 场景。它复用 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式，并额外计算多模态能力、答案质量、引用可靠性和延迟指标：
 
@@ -454,6 +484,22 @@ Skill 采用 **"写作原则 + 项目亮点 + 用户画像 = 定制化简历"** 
 - **Copilot（VS Code）**：让 AI 帮你生成 MCP 配置文件即可
 - **Cursor**：直接导入项目，Cursor 会自动识别
 - **Claude Code / 其他框架**：问 AI 怎么配置，每个工具的配置方式略有不同，但原理都一样
+
+开发环境中建议把 MCP Client 指向真实 server module：
+
+```json
+{
+  "mcpServers": {
+    "modular-rag": {
+      "command": "python",
+      "args": ["-m", "src.mcp_server.server"],
+      "env": {
+        "OPENAI_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
 
 当然，也推荐你去理解 MCP 协议的原理——了解 Server 和 Client 之间是如何通信的、Tool 是怎么注册和调用的。这些在面试中也是加分项。
 

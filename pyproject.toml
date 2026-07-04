@@ -52,7 +52,7 @@ dev = [
 ]
 
 [project.scripts]
-mcp-server = "main:main"
+mcp-server = "src.mcp_server.server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
