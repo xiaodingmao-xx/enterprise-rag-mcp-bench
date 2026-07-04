@@ -122,6 +122,21 @@ performance:
     db_path: "./data/db/embedding_cache.db"
 
 # =============================================================================
+# Response Configuration
+# =============================================================================
+response:
+  answer_generation:
+    enabled: true
+    default_mode: "contexts"
+    min_contexts: 1
+    min_score: 0.2
+    max_context_chars: 8000
+    default_answer_style: "concise"
+    timeout_seconds: 20
+    hallucination_guard:
+      enabled: true
+
+# =============================================================================
 # Ingestion Configuration
 # =============================================================================
 ingestion:

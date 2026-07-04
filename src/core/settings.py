@@ -286,6 +286,32 @@ class EmbeddingCacheSettings:
 
 
 @dataclass(frozen=True)
+class HallucinationGuardSettings:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class AnswerGenerationSettings:
+    enabled: bool = True
+    default_mode: str = "contexts"
+    min_contexts: int = 1
+    min_score: float = 0.2
+    max_context_chars: int = 8000
+    default_answer_style: str = "concise"
+    timeout_seconds: float = 20.0
+    hallucination_guard: HallucinationGuardSettings = field(
+        default_factory=HallucinationGuardSettings
+    )
+
+
+@dataclass(frozen=True)
+class ResponseSettings:
+    answer_generation: AnswerGenerationSettings = field(
+        default_factory=AnswerGenerationSettings
+    )
+
+
+@dataclass(frozen=True)
 class PerformanceSettings:
     query_cache: QueryCacheSettings = field(default_factory=QueryCacheSettings)
     embedding_cache: EmbeddingCacheSettings = field(default_factory=EmbeddingCacheSettings)
@@ -303,6 +329,7 @@ class Settings:
     ingestion: Optional[IngestionSettings] = None
     vision_llm: Optional[VisionLLMSettings] = None
     performance: PerformanceSettings = field(default_factory=PerformanceSettings)
+    response: ResponseSettings = field(default_factory=ResponseSettings)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Settings":
@@ -415,6 +442,44 @@ class Settings:
                 ),
             )
 
+        response_settings = ResponseSettings()
+        if "response" in data:
+            response = _require_mapping(data, "response", "settings")
+            answer_generation = _optional_mapping(response.get("answer_generation"))
+            guard_settings = _optional_mapping(answer_generation.get("hallucination_guard"))
+            response_settings = ResponseSettings(
+                answer_generation=AnswerGenerationSettings(
+                    enabled=bool(answer_generation.get("enabled", True)),
+                    default_mode=str(answer_generation.get("default_mode", "contexts")),
+                    min_contexts=_int_or_default(
+                        answer_generation.get("min_contexts"),
+                        1,
+                        1,
+                    ),
+                    min_score=_float_or_default(
+                        answer_generation.get("min_score"),
+                        0.2,
+                        0.0,
+                    ),
+                    max_context_chars=_int_or_default(
+                        answer_generation.get("max_context_chars"),
+                        8000,
+                        1,
+                    ),
+                    default_answer_style=str(
+                        answer_generation.get("default_answer_style", "concise")
+                    ),
+                    timeout_seconds=_float_or_default(
+                        answer_generation.get("timeout_seconds"),
+                        20.0,
+                        0.001,
+                    ),
+                    hallucination_guard=HallucinationGuardSettings(
+                        enabled=bool(guard_settings.get("enabled", True))
+                    ),
+                )
+            )
+
         rerank_top_k = _require_int(rerank, "top_k", "rerank")
 
         settings = cls(
@@ -492,6 +557,7 @@ class Settings:
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
             performance=performance_settings,
+            response=response_settings,
         )
 
         return settings
