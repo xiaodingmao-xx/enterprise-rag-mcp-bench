@@ -139,6 +139,18 @@ def _normalise_extensions(value: Any, path: str) -> List[str]:
     return extensions or DEFAULT_SUPPORTED_EXTENSIONS.copy()
 
 
+def _optional_mapping(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _int_or_default(value: Any, default: int, minimum: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, parsed)
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     provider: str
@@ -221,11 +233,24 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
+class ChunkingSettings:
+    strategy: str = "recursive"
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+    recursive: Dict[str, Any] = field(default_factory=dict)
+    markdown_header: Dict[str, Any] = field(default_factory=dict)
+    semantic: Dict[str, Any] = field(default_factory=dict)
+    parent_child: Dict[str, Any] = field(default_factory=dict)
+    sliding_window: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     chunk_size: int
     chunk_overlap: int
     splitter: str
     batch_size: int
+    chunking: ChunkingSettings = field(default_factory=ChunkingSettings)
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enrichment: Optional[Dict[str, Any]] = None  # 结构化元数据增强配置
@@ -283,11 +308,30 @@ class Settings:
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
+            legacy_chunk_size = _require_int(ingestion, "chunk_size", "ingestion")
+            legacy_chunk_overlap = _require_int(ingestion, "chunk_overlap", "ingestion")
+            legacy_splitter = _require_str(ingestion, "splitter", "ingestion")
+            chunking = _optional_mapping(ingestion.get("chunking"))
+            chunking_settings = ChunkingSettings(
+                strategy=str(chunking.get("strategy") or legacy_splitter or "recursive"),
+                chunk_size=_int_or_default(chunking.get("chunk_size"), legacy_chunk_size, 1),
+                chunk_overlap=_int_or_default(
+                    chunking.get("chunk_overlap"),
+                    legacy_chunk_overlap,
+                    0,
+                ),
+                recursive=_optional_mapping(chunking.get("recursive")),
+                markdown_header=_optional_mapping(chunking.get("markdown_header")),
+                semantic=_optional_mapping(chunking.get("semantic")),
+                parent_child=_optional_mapping(chunking.get("parent_child")),
+                sliding_window=_optional_mapping(chunking.get("sliding_window")),
+            )
             ingestion_settings = IngestionSettings(
-                chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
-                chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
-                splitter=_require_str(ingestion, "splitter", "ingestion"),
+                chunk_size=legacy_chunk_size,
+                chunk_overlap=legacy_chunk_overlap,
+                splitter=legacy_splitter,
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
+                chunking=chunking_settings,
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
                 metadata_enrichment=ingestion.get("metadata_enrichment"),  # 可选配置

@@ -25,6 +25,9 @@ import hashlib
 from typing import TYPE_CHECKING, List
 
 from src.core.types import Chunk, Document
+from src.ingestion.chunking.chunk_id import generate_chunk_id, resolve_doc_hash
+from src.ingestion.chunking.chunk_schema import ChunkDraft, draft_to_chunk
+from src.ingestion.chunking.chunker_factory import ChunkerFactory
 from src.libs.splitter.splitter_factory import SplitterFactory
 
 if TYPE_CHECKING:
@@ -70,7 +73,14 @@ class DocumentChunker:
             ValueError: If splitter configuration is invalid or provider unknown
         """
         self._settings = settings
-        self._splitter = SplitterFactory.create(settings)
+        self._splitter = None
+        self._chunker = None
+        try:
+            self._chunker = ChunkerFactory.create(settings)
+        except Exception:
+            # Compatibility path for legacy tests/configs that monkeypatch
+            # SplitterFactory directly.
+            self._splitter = SplitterFactory.create(settings)
     
     def split_document(self, document: Document) -> List[Chunk]:
         """Split a Document into Chunks with full business enrichment.
@@ -113,29 +123,67 @@ class DocumentChunker:
         if not document.text or not document.text.strip():
             raise ValueError(f"Document {document.id} has no text content to split")
         
-        # Step 1: Use underlying splitter to get text fragments
-        text_fragments = self._splitter.split_text(document.text)
-        
-        if not text_fragments:
+        if self._chunker is not None:
+            drafts = self._chunker.split(document)
+        else:
+            drafts = self._split_legacy(document)
+
+        if not drafts:
             raise ValueError(
                 f"Splitter returned no chunks for document {document.id}. "
                 f"Text length: {len(document.text)}"
             )
         
-        # Step 2: Transform text fragments into Chunk objects with enrichment
+        # Step 2: Transform drafts into Chunk objects with enrichment
         chunks: List[Chunk] = []
-        for index, text in enumerate(text_fragments):
-            chunk_id = self._generate_chunk_id(document.id, index, text)
-            chunk_metadata = self._inherit_metadata(document, index, text)
-            
-            chunk = Chunk(
-                id=chunk_id,
-                text=text,
-                metadata=chunk_metadata
+        doc_hash = resolve_doc_hash(
+            doc_id=document.id,
+            metadata=document.metadata or {},
+            text=document.text,
+        )
+        for index, draft in enumerate(drafts):
+            chunk_id = draft.chunk_id or generate_chunk_id(
+                doc_hash=doc_hash,
+                text=draft.text,
+                chunk_index=index,
+                page_range=draft.page_range,
+                section_path=draft.section_path,
+                heading_path=draft.heading_path,
+            )
+            chunk = draft_to_chunk(
+                document=document,
+                draft=draft,
+                chunk_id=chunk_id,
+                chunk_index=index,
             )
             chunks.append(chunk)
         
         return chunks
+
+    def _split_legacy(self, document: Document) -> List[ChunkDraft]:
+        if self._splitter is None:
+            return []
+        fragments = self._splitter.split_text(document.text)
+        drafts: List[ChunkDraft] = []
+        cursor = 0
+        for index, text in enumerate(fragments):
+            start = document.text.find(text, cursor)
+            if start < 0:
+                start = document.text.find(text)
+            if start < 0:
+                start = cursor
+            end = start + len(text)
+            cursor = end
+            drafts.append(
+                ChunkDraft(
+                    text=text,
+                    metadata=dict(document.metadata),
+                    chunk_id=f"{document.id}_{index:04d}_{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}",
+                    char_start=start,
+                    char_end=end,
+                )
+            )
+        return drafts
     
     def _generate_chunk_id(self, doc_id: str, index: int, text: str) -> str:
         """Generate unique and deterministic chunk ID.
@@ -162,11 +210,12 @@ class DocumentChunker:
             >>> chunker._generate_chunk_id("doc_123", 0, "Hello world")
             'doc_123_0000_c0535e4b'
         """
-        # Compute content hash for uniqueness
-        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
-        
-        # Format: {doc_id}_{index:04d}_{hash_8chars}
-        return f"{doc_id}_{index:04d}_{content_hash}"
+        doc_hash = resolve_doc_hash(doc_id=doc_id, metadata={}, text=text)
+        return generate_chunk_id(
+            doc_hash=doc_hash,
+            text=text,
+            chunk_index=index,
+        )
     
     def _inherit_metadata(self, document: Document, chunk_index: int, chunk_text: str = "") -> dict:
         """Inherit metadata from document and add chunk-specific fields.
@@ -205,45 +254,14 @@ class DocumentChunker:
             >>> metadata["image_refs"]
             ['img_001']
         """
-        import re
-        
-        # Copy all document metadata (shallow copy is sufficient for primitives)
-        chunk_metadata = document.metadata.copy()
-        
-        # Get document-level images for lookup
-        doc_images = document.metadata.get("images", [])
-        
-        # Remove document-level 'images' field - we'll add chunk-specific images below
-        chunk_metadata.pop("images", None)
-        
-        # Add chunk-specific fields
-        chunk_metadata["chunk_index"] = chunk_index
-        chunk_metadata["source_ref"] = document.id
-        
-        # Extract image_refs from chunk text by finding [IMAGE: xxx] placeholders
-        image_refs = []
-        if chunk_text:
-            # Pattern matches [IMAGE: image_id] placeholders
-            pattern = r'\[IMAGE:\s*([^\]]+)\]'
-            matches = re.findall(pattern, chunk_text)
-            image_refs = [m.strip() for m in matches]
-        
-        chunk_metadata["image_refs"] = image_refs
-        
-        # Build chunk-specific 'images' list with full metadata for referenced images
-        # This is needed by ImageCaptioner to access image paths for Vision API calls
-        chunk_images = []
-        if image_refs and doc_images:
-            image_lookup = {img.get("id"): img for img in doc_images}
-            for img_id in image_refs:
-                if img_id in image_lookup:
-                    chunk_images.append(image_lookup[img_id])
-        
-        if chunk_images:
-            chunk_metadata["images"] = chunk_images
-        
-        # Try to determine page_num from the first referenced image
-        if chunk_images:
-            chunk_metadata["page_num"] = chunk_images[0].get("page")
-        
-        return chunk_metadata
+        draft = ChunkDraft(
+            text=chunk_text or document.text,
+            metadata=dict(document.metadata),
+        )
+        chunk_id = self._generate_chunk_id(document.id, chunk_index, draft.text)
+        return draft_to_chunk(
+            document=document,
+            draft=draft,
+            chunk_id=chunk_id,
+            chunk_index=chunk_index,
+        ).metadata

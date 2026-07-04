@@ -125,6 +125,46 @@ ingestion:
   chunk_overlap: 200
   splitter: "recursive"  # Options: recursive, semantic, fixed_length
   batch_size: 20
+  chunking:
+    strategy: "recursive"
+    chunk_size: 1000
+    chunk_overlap: 200
+    recursive:
+      separators:
+        - "\n\n"
+        - "\n"
+        - "。"
+        - "."
+        - " "
+        - ""
+    markdown_header:
+      headers:
+        - ["#", "h1"]
+        - ["##", "h2"]
+        - ["###", "h3"]
+        - ["####", "h4"]
+      split_under_headers: true
+      preserve_headers: true
+    semantic:
+      enabled: false
+      embedding_provider: "openai"
+      breakpoint_threshold_type: "percentile"
+      breakpoint_threshold_amount: 95
+      min_chunk_size: 300
+      max_chunk_size: 1200
+    parent_child:
+      enabled: false
+      parent_chunk_size: 1600
+      parent_chunk_overlap: 200
+      child_chunk_size: 500
+      child_chunk_overlap: 80
+      link_parent_child: true
+      return_children_only: true
+      return_parent_and_children: false
+    sliding_window:
+      window_size: 800
+      step_size: 400
+      preserve_sentence_boundary: true
   supported_extensions:
     - ".pdf"
     - ".md"

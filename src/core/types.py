@@ -124,11 +124,57 @@ class Chunk:
     start_offset: Optional[int] = None
     end_offset: Optional[int] = None
     source_ref: Optional[str] = None
+    doc_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    page_range: Optional[Any] = None
+    section_path: List[str] = field(default_factory=list)
+    heading_path: List[str] = field(default_factory=list)
+    heading: Optional[str] = None
+    parent_chunk_id: Optional[str] = None
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
     
     def __post_init__(self):
         """Validate required metadata fields."""
         if "source_path" not in self.metadata:
             raise ValueError("Chunk metadata must contain 'source_path'")
+        if self.source_ref is None and self.metadata.get("source_ref") is not None:
+            self.source_ref = str(self.metadata["source_ref"])
+        if self.doc_id is None and self.metadata.get("doc_id") is not None:
+            self.doc_id = str(self.metadata["doc_id"])
+        if self.chunk_index is None and self.metadata.get("chunk_index") is not None:
+            try:
+                self.chunk_index = int(self.metadata["chunk_index"])
+            except (TypeError, ValueError):
+                self.chunk_index = None
+        if self.page_range is None and self.metadata.get("page_range") is not None:
+            self.page_range = self.metadata["page_range"]
+        if not self.section_path and isinstance(self.metadata.get("section_path"), list):
+            self.section_path = [str(item) for item in self.metadata["section_path"]]
+        if not self.heading_path and isinstance(self.metadata.get("heading_path"), list):
+            self.heading_path = [str(item) for item in self.metadata["heading_path"]]
+        if self.heading is None and self.metadata.get("heading") is not None:
+            self.heading = str(self.metadata["heading"])
+        if self.parent_chunk_id is None and self.metadata.get("parent_chunk_id") is not None:
+            self.parent_chunk_id = str(self.metadata["parent_chunk_id"])
+        if self.char_start is None and self.metadata.get("char_start") is not None:
+            try:
+                self.char_start = int(self.metadata["char_start"])
+            except (TypeError, ValueError):
+                self.char_start = None
+        if self.char_end is None and self.metadata.get("char_end") is not None:
+            try:
+                self.char_end = int(self.metadata["char_end"])
+            except (TypeError, ValueError):
+                self.char_end = None
+        if self.char_start is None:
+            self.char_start = self.start_offset
+        if self.char_end is None:
+            self.char_end = self.end_offset
+        if self.start_offset is None:
+            self.start_offset = self.char_start
+        if self.end_offset is None:
+            self.end_offset = self.char_end
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

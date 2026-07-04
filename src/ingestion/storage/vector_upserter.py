@@ -152,6 +152,10 @@ class VectorUpserter:
         Raises:
             ValueError: If required metadata fields are missing.
         """
+        existing = chunk.metadata.get("chunk_id") or chunk.id
+        if existing and "::" in str(existing):
+            return str(existing)
+
         # Validate required metadata
         if "source_path" not in chunk.metadata:
             raise ValueError("Chunk metadata must contain 'source_path'")

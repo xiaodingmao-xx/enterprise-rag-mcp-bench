@@ -635,7 +635,11 @@ class IngestionPipeline:
             
             # Process through BatchProcessor
             _t0 = time.monotonic()
-            batch_result = self._process_embeddings(chunks, trace)
+            process_embeddings = getattr(self, "_process_embeddings", None)
+            if callable(process_embeddings):
+                batch_result = process_embeddings(chunks, trace)
+            else:
+                batch_result = self.batch_processor.process(chunks, trace)
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             dense_vectors = batch_result.dense_vectors
@@ -692,10 +696,11 @@ class IngestionPipeline:
             # 7a: Vector Upsert
             logger.info("  7a. Vector Storage (ChromaDB)...")
             _t0_storage = time.monotonic()
-            deleted_vector_count = self._delete_existing_vectors_for_source(
-                str(file_path),
-                trace=trace,
-            )
+            delete_existing = getattr(self, "_delete_existing_vectors_for_source", None)
+            if callable(delete_existing):
+                deleted_vector_count = delete_existing(str(file_path), trace=trace)
+            else:
+                deleted_vector_count = 0
             vector_ids = self.vector_upserter.upsert(chunks, dense_vectors, trace)
             logger.info(f"      Stored {len(vector_ids)} vectors")
 
