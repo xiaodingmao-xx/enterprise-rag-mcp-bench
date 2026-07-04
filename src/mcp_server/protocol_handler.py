@@ -13,7 +13,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from mcp import types
 from mcp.server.lowlevel import Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 
+from src.mcp_server.resources import RagResourceRegistry
 from src.observability.logger import get_logger
 
 
@@ -212,6 +214,7 @@ def create_mcp_server(
     server_name: str,
     server_version: str,
     protocol_handler: Optional[ProtocolHandler] = None,
+    resource_registry: Optional[RagResourceRegistry] = None,
     register_tools: bool = True,
 ) -> Server:
     """Create and configure an MCP server with the protocol handler.
@@ -234,6 +237,8 @@ def create_mcp_server(
             server_name=server_name,
             server_version=server_version,
         )
+    if resource_registry is None:
+        resource_registry = RagResourceRegistry()
 
     # Register default tools for the normal server path. A caller-provided
     # handler may already contain a custom tool set for tests or embedding.
@@ -248,6 +253,16 @@ def create_mcp_server(
     async def handle_list_tools() -> List[types.Tool]:
         """Handle tools/list request."""
         return protocol_handler.get_tool_schemas()
+
+    @server.list_resources()
+    async def handle_list_resources() -> List[types.Resource]:
+        """Handle resources/list request."""
+        return resource_registry.list_resources()
+
+    @server.read_resource()
+    async def handle_read_resource(uri: Any) -> List[ReadResourceContents]:
+        """Handle resources/read request."""
+        return resource_registry.read_resource(str(uri))
 
     # Register tools/call handler
     @server.call_tool()
