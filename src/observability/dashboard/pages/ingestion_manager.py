@@ -72,6 +72,14 @@ def _run_ingestion(
                 status_text.error(f"Ingestion failed: {result.error}")
             return
 
+        skipped = result.stages.get("integrity", {}).get("skipped", False)
+        if skipped:
+            progress_bar.progress(1.0, text="Already processed")
+            status_text.info(
+                f"**{uploaded_file.name}** 文件已经处理过，已跳过重复摄取。"
+            )
+            return
+
         progress_bar.progress(1.0, text="✅ Complete")
         status_text.success(f"Successfully ingested **{uploaded_file.name}** into collection **{collection}**.")
     except Exception as exc:

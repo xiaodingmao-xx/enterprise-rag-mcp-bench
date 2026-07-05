@@ -1,0 +1,2180 @@
+{
+  "timestamp": "20260705_145315",
+  "dataset": "G:\\data\\RAG_dataset\\EnterpriseRAG-Bench\\data\\questions\\test.parquet",
+  "config": "H:\\Learning\\postgraduate\\0Resume\\project\\MODULAR-RAG-MCP-SERVER-main\\config\\settings.yaml",
+  "collection": "enterprise_rag",
+  "collection_record_count": 0,
+  "top_k": 10,
+  "candidate_k": 20,
+  "modes": [
+    "dense",
+    "bm25",
+    "hybrid",
+    "hybrid_rerank"
+  ],
+  "test_case_count": 20,
+  "filters": {
+    "question_types": [],
+    "source_types": [],
+    "max_questions": 20,
+    "skip_no_ground_truth": true
+  },
+  "warnings": [
+    "Collection 'enterprise_rag' appears to be empty. Run scripts/ingest.py before evaluating retrieval quality."
+  ],
+  "results": {
+    "dense": {
+      "mode": "dense",
+      "query_count": 20,
+      "evaluated_query_count": 20,
+      "skipped_query_count": 0,
+      "error_count": 0,
+      "aggregate_metrics": {
+        "recall@10": 0.0,
+        "precision@10": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0,
+        "hit@10": 0.0,
+        "latency_ms": 1209.4
+      },
+      "elapsed_ms": 24188.0,
+      "query_results": [
+        {
+          "index": 1,
+          "question_id": "qst_0001",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What are the default size limits for file uploads and total request size for the new multipart upload support on the OpenAI-compatible API endpoints?",
+          "expected_doc_ids": [
+            "dsid_ae068ee4aa9640159427cd941bef0238"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 4188.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "question_id": "qst_0002",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What is the name of the new metric added so SRE can track when server-side streaming sessions get finalized due to hitting the time limit?",
+          "expected_doc_ids": [
+            "dsid_9550250a59e74f1bbd5612480b2e7100"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1843.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "question_id": "qst_0003",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "What are the acceptance criteria for the project introducing an algorithm to generate interactive UI color states and a Kappa-style elevation scale for dense table and grid components?",
+          "expected_doc_ids": [
+            "dsid_3fd6af404fae48e6b8ea5a57875ef78f"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1032.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "question_id": "qst_0004",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the meeting about onboarding a SaaS product to Google Cloud Marketplace, what did the GCP team recommend for handling delays where a new subscription entitlement is not immediately available during the customer onboarding flow?",
+          "expected_doc_ids": [
+            "dsid_6c4c1c875e704f09b4d791d64d7bc7e5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 984.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "question_id": "qst_0005",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "What failover sequence and recovery targets did MedThink specify for handling an EU region outage, including any limits on how long traffic can shift to the US?",
+          "expected_doc_ids": [
+            "dsid_8e838ab6a98f4cbcb672d41f210ff89c"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 922.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 6,
+          "question_id": "qst_0006",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the draft spec about extending a routing policy engine for automated regional failover, what is the proposed priority order for evaluating different failure signals when deciding whether to shift traffic or fail over?",
+          "expected_doc_ids": [
+            "dsid_184be937d34a412ab5e61366d54d8ed6"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1031.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 7,
+          "question_id": "qst_0007",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In a rolling investigation of a model regression on policy-related prompts after a recent deploy, what was the average triage rubric score change between the older baseline build and the newer optimized build in the first comparison run?",
+          "expected_doc_ids": [
+            "dsid_72ec4a9962ba43e88acd61abbba1052d"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 922.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 8,
+          "question_id": "qst_0008",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the internal shiproom runner notes, what is the target time-to-recover threshold for a verified rollback in staging?",
+          "expected_doc_ids": [
+            "dsid_5fc2dba9f6ac4af2b49b4f546a4298d0"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1094.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 9,
+          "question_id": "qst_0009",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "In the EdgePath evaluation email thread, what alternative Year 1 pricing package did Redwood propose instead of matching the competitor's 50 percent first-year discount and migration credit?",
+          "expected_doc_ids": [
+            "dsid_85deb10a652742baaf28af6149600001"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 937.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 10,
+          "question_id": "qst_0010",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "How does the new alerting approach group model-serving requests by the stages they pass through to reduce noisy alerts and speed up root cause analysis?",
+          "expected_doc_ids": [
+            "dsid_c1a6a71323c04c1ba5445aadea340362"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1032.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 11,
+          "question_id": "qst_0011",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "How long is the validity period for the telemetry driven runbook author certification from the operator training bootcamp?",
+          "expected_doc_ids": [
+            "dsid_46a4cb87db414e769f2df86f01626948"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 968.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 12,
+          "question_id": "qst_0012",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "What was identified as the root cause of the intermittent VPN connectivity blackholes and duplicate IP warnings for users on the corporate Wi-Fi in the SF2 building behind a specific edge switch?",
+          "expected_doc_ids": [
+            "dsid_59cb294da8964683bb165a3bb615df71"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1016.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 13,
+          "question_id": "qst_0013",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the recommended two-stage process for rotating the signing credentials used by GPU image build and promotion pipelines, including how to cut over safely and roll back if something goes wrong?",
+          "expected_doc_ids": [
+            "dsid_f1b208f3637e4987aeab371242a5bea5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1047.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 14,
+          "question_id": "qst_0014",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the on-prem private upgrade deep dive with an air-gapped healthcare customer, what did they describe as their current rollback approach when an upgrade goes wrong?",
+          "expected_doc_ids": [
+            "dsid_9ed01291d81947f49500df5fb28ab724"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 969.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 15,
+          "question_id": "qst_0015",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What was the high-percentile latency concern reported after a smoke test of about 50 concurrent streaming chat sessions for Satellite Grove?",
+          "expected_doc_ids": [
+            "dsid_e75bbf328fe349d2bb39e29b1ed7c9d5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1015.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 16,
+          "question_id": "qst_0016",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the company policy for how long contractor access should last by default before it expires, according to the access and permissions playbook?",
+          "expected_doc_ids": [
+            "dsid_ba7d1565b0694e359983bccaa4bf5977"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1110.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 17,
+          "question_id": "qst_0017",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What service credit percentages were proposed in the tiered uptime SLA counteroffer for the maritime logistics SaaS customer using dedicated GPU capacity?",
+          "expected_doc_ids": [
+            "dsid_03af1e44970d4d6db6e85bc2c5fce8de"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1031.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 18,
+          "question_id": "qst_0018",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "In the incident writeup about KV cache ghost entries causing gradual memory growth and OOM during a surge, what metric name was added for counting when the sanitizer finds negative refcounts?",
+          "expected_doc_ids": [
+            "dsid_1f81f208f51a4aacaca226109bbedc72"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1015.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 19,
+          "question_id": "qst_0019",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "After a recent network change at the SoMa office, users on corporate WiFi saw VPN access to an internal 10.11.x service fail and SSO logins time out because an office bridge was translating client addresses. What device mode misconfiguration caused the source IP rewrite?",
+          "expected_doc_ids": [
+            "dsid_e728a420a02a4ddcb125e6adb09d211e"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1047.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 20,
+          "question_id": "qst_0020",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "In the recent update to the chat completions compatibility adapter, how does the parameter normalizer handle a client sending max_tokens as null compared to leaving it out entirely?",
+          "expected_doc_ids": [
+            "dsid_1c53affffb4f477ca476bec3138b60eb"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 985.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        }
+      ]
+    },
+    "bm25": {
+      "mode": "bm25",
+      "query_count": 20,
+      "evaluated_query_count": 20,
+      "skipped_query_count": 0,
+      "error_count": 0,
+      "aggregate_metrics": {
+        "recall@10": 0.0,
+        "precision@10": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0,
+        "hit@10": 0.0,
+        "latency_ms": 42.95
+      },
+      "elapsed_ms": 859.0,
+      "query_results": [
+        {
+          "index": 1,
+          "question_id": "qst_0001",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What are the default size limits for file uploads and total request size for the new multipart upload support on the OpenAI-compatible API endpoints?",
+          "expected_doc_ids": [
+            "dsid_ae068ee4aa9640159427cd941bef0238"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 828.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "question_id": "qst_0002",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What is the name of the new metric added so SRE can track when server-side streaming sessions get finalized due to hitting the time limit?",
+          "expected_doc_ids": [
+            "dsid_9550250a59e74f1bbd5612480b2e7100"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "question_id": "qst_0003",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "What are the acceptance criteria for the project introducing an algorithm to generate interactive UI color states and a Kappa-style elevation scale for dense table and grid components?",
+          "expected_doc_ids": [
+            "dsid_3fd6af404fae48e6b8ea5a57875ef78f"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "question_id": "qst_0004",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the meeting about onboarding a SaaS product to Google Cloud Marketplace, what did the GCP team recommend for handling delays where a new subscription entitlement is not immediately available during the customer onboarding flow?",
+          "expected_doc_ids": [
+            "dsid_6c4c1c875e704f09b4d791d64d7bc7e5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "question_id": "qst_0005",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "What failover sequence and recovery targets did MedThink specify for handling an EU region outage, including any limits on how long traffic can shift to the US?",
+          "expected_doc_ids": [
+            "dsid_8e838ab6a98f4cbcb672d41f210ff89c"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 15.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 6,
+          "question_id": "qst_0006",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the draft spec about extending a routing policy engine for automated regional failover, what is the proposed priority order for evaluating different failure signals when deciding whether to shift traffic or fail over?",
+          "expected_doc_ids": [
+            "dsid_184be937d34a412ab5e61366d54d8ed6"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 7,
+          "question_id": "qst_0007",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In a rolling investigation of a model regression on policy-related prompts after a recent deploy, what was the average triage rubric score change between the older baseline build and the newer optimized build in the first comparison run?",
+          "expected_doc_ids": [
+            "dsid_72ec4a9962ba43e88acd61abbba1052d"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 8,
+          "question_id": "qst_0008",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the internal shiproom runner notes, what is the target time-to-recover threshold for a verified rollback in staging?",
+          "expected_doc_ids": [
+            "dsid_5fc2dba9f6ac4af2b49b4f546a4298d0"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 9,
+          "question_id": "qst_0009",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "In the EdgePath evaluation email thread, what alternative Year 1 pricing package did Redwood propose instead of matching the competitor's 50 percent first-year discount and migration credit?",
+          "expected_doc_ids": [
+            "dsid_85deb10a652742baaf28af6149600001"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 10,
+          "question_id": "qst_0010",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "How does the new alerting approach group model-serving requests by the stages they pass through to reduce noisy alerts and speed up root cause analysis?",
+          "expected_doc_ids": [
+            "dsid_c1a6a71323c04c1ba5445aadea340362"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 11,
+          "question_id": "qst_0011",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "How long is the validity period for the telemetry driven runbook author certification from the operator training bootcamp?",
+          "expected_doc_ids": [
+            "dsid_46a4cb87db414e769f2df86f01626948"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 12,
+          "question_id": "qst_0012",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "What was identified as the root cause of the intermittent VPN connectivity blackholes and duplicate IP warnings for users on the corporate Wi-Fi in the SF2 building behind a specific edge switch?",
+          "expected_doc_ids": [
+            "dsid_59cb294da8964683bb165a3bb615df71"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 13,
+          "question_id": "qst_0013",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the recommended two-stage process for rotating the signing credentials used by GPU image build and promotion pipelines, including how to cut over safely and roll back if something goes wrong?",
+          "expected_doc_ids": [
+            "dsid_f1b208f3637e4987aeab371242a5bea5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 14,
+          "question_id": "qst_0014",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the on-prem private upgrade deep dive with an air-gapped healthcare customer, what did they describe as their current rollback approach when an upgrade goes wrong?",
+          "expected_doc_ids": [
+            "dsid_9ed01291d81947f49500df5fb28ab724"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 15,
+          "question_id": "qst_0015",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What was the high-percentile latency concern reported after a smoke test of about 50 concurrent streaming chat sessions for Satellite Grove?",
+          "expected_doc_ids": [
+            "dsid_e75bbf328fe349d2bb39e29b1ed7c9d5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 16,
+          "question_id": "qst_0016",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the company policy for how long contractor access should last by default before it expires, according to the access and permissions playbook?",
+          "expected_doc_ids": [
+            "dsid_ba7d1565b0694e359983bccaa4bf5977"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 17,
+          "question_id": "qst_0017",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What service credit percentages were proposed in the tiered uptime SLA counteroffer for the maritime logistics SaaS customer using dedicated GPU capacity?",
+          "expected_doc_ids": [
+            "dsid_03af1e44970d4d6db6e85bc2c5fce8de"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 18,
+          "question_id": "qst_0018",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "In the incident writeup about KV cache ghost entries causing gradual memory growth and OOM during a surge, what metric name was added for counting when the sanitizer finds negative refcounts?",
+          "expected_doc_ids": [
+            "dsid_1f81f208f51a4aacaca226109bbedc72"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 19,
+          "question_id": "qst_0019",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "After a recent network change at the SoMa office, users on corporate WiFi saw VPN access to an internal 10.11.x service fail and SSO logins time out because an office bridge was translating client addresses. What device mode misconfiguration caused the source IP rewrite?",
+          "expected_doc_ids": [
+            "dsid_e728a420a02a4ddcb125e6adb09d211e"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 16.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 20,
+          "question_id": "qst_0020",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "In the recent update to the chat completions compatibility adapter, how does the parameter normalizer handle a client sending max_tokens as null compared to leaving it out entirely?",
+          "expected_doc_ids": [
+            "dsid_1c53affffb4f477ca476bec3138b60eb"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 0.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        }
+      ]
+    },
+    "hybrid": {
+      "mode": "hybrid",
+      "query_count": 20,
+      "evaluated_query_count": 20,
+      "skipped_query_count": 0,
+      "error_count": 0,
+      "aggregate_metrics": {
+        "recall@10": 0.0,
+        "precision@10": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0,
+        "hit@10": 0.0,
+        "latency_ms": 961.7
+      },
+      "elapsed_ms": 19234.0,
+      "query_results": [
+        {
+          "index": 1,
+          "question_id": "qst_0001",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What are the default size limits for file uploads and total request size for the new multipart upload support on the OpenAI-compatible API endpoints?",
+          "expected_doc_ids": [
+            "dsid_ae068ee4aa9640159427cd941bef0238"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1000.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "question_id": "qst_0002",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What is the name of the new metric added so SRE can track when server-side streaming sessions get finalized due to hitting the time limit?",
+          "expected_doc_ids": [
+            "dsid_9550250a59e74f1bbd5612480b2e7100"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1078.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "question_id": "qst_0003",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "What are the acceptance criteria for the project introducing an algorithm to generate interactive UI color states and a Kappa-style elevation scale for dense table and grid components?",
+          "expected_doc_ids": [
+            "dsid_3fd6af404fae48e6b8ea5a57875ef78f"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 953.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "question_id": "qst_0004",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the meeting about onboarding a SaaS product to Google Cloud Marketplace, what did the GCP team recommend for handling delays where a new subscription entitlement is not immediately available during the customer onboarding flow?",
+          "expected_doc_ids": [
+            "dsid_6c4c1c875e704f09b4d791d64d7bc7e5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 953.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "question_id": "qst_0005",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "What failover sequence and recovery targets did MedThink specify for handling an EU region outage, including any limits on how long traffic can shift to the US?",
+          "expected_doc_ids": [
+            "dsid_8e838ab6a98f4cbcb672d41f210ff89c"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 954.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 6,
+          "question_id": "qst_0006",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the draft spec about extending a routing policy engine for automated regional failover, what is the proposed priority order for evaluating different failure signals when deciding whether to shift traffic or fail over?",
+          "expected_doc_ids": [
+            "dsid_184be937d34a412ab5e61366d54d8ed6"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 875.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 7,
+          "question_id": "qst_0007",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In a rolling investigation of a model regression on policy-related prompts after a recent deploy, what was the average triage rubric score change between the older baseline build and the newer optimized build in the first comparison run?",
+          "expected_doc_ids": [
+            "dsid_72ec4a9962ba43e88acd61abbba1052d"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1015.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 8,
+          "question_id": "qst_0008",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the internal shiproom runner notes, what is the target time-to-recover threshold for a verified rollback in staging?",
+          "expected_doc_ids": [
+            "dsid_5fc2dba9f6ac4af2b49b4f546a4298d0"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 906.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 9,
+          "question_id": "qst_0009",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "In the EdgePath evaluation email thread, what alternative Year 1 pricing package did Redwood propose instead of matching the competitor's 50 percent first-year discount and migration credit?",
+          "expected_doc_ids": [
+            "dsid_85deb10a652742baaf28af6149600001"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 954.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 10,
+          "question_id": "qst_0010",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "How does the new alerting approach group model-serving requests by the stages they pass through to reduce noisy alerts and speed up root cause analysis?",
+          "expected_doc_ids": [
+            "dsid_c1a6a71323c04c1ba5445aadea340362"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1031.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 11,
+          "question_id": "qst_0011",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "How long is the validity period for the telemetry driven runbook author certification from the operator training bootcamp?",
+          "expected_doc_ids": [
+            "dsid_46a4cb87db414e769f2df86f01626948"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 922.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 12,
+          "question_id": "qst_0012",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "What was identified as the root cause of the intermittent VPN connectivity blackholes and duplicate IP warnings for users on the corporate Wi-Fi in the SF2 building behind a specific edge switch?",
+          "expected_doc_ids": [
+            "dsid_59cb294da8964683bb165a3bb615df71"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 922.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 13,
+          "question_id": "qst_0013",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the recommended two-stage process for rotating the signing credentials used by GPU image build and promotion pipelines, including how to cut over safely and roll back if something goes wrong?",
+          "expected_doc_ids": [
+            "dsid_f1b208f3637e4987aeab371242a5bea5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 984.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 14,
+          "question_id": "qst_0014",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the on-prem private upgrade deep dive with an air-gapped healthcare customer, what did they describe as their current rollback approach when an upgrade goes wrong?",
+          "expected_doc_ids": [
+            "dsid_9ed01291d81947f49500df5fb28ab724"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 937.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 15,
+          "question_id": "qst_0015",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What was the high-percentile latency concern reported after a smoke test of about 50 concurrent streaming chat sessions for Satellite Grove?",
+          "expected_doc_ids": [
+            "dsid_e75bbf328fe349d2bb39e29b1ed7c9d5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 922.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 16,
+          "question_id": "qst_0016",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the company policy for how long contractor access should last by default before it expires, according to the access and permissions playbook?",
+          "expected_doc_ids": [
+            "dsid_ba7d1565b0694e359983bccaa4bf5977"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 938.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 17,
+          "question_id": "qst_0017",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What service credit percentages were proposed in the tiered uptime SLA counteroffer for the maritime logistics SaaS customer using dedicated GPU capacity?",
+          "expected_doc_ids": [
+            "dsid_03af1e44970d4d6db6e85bc2c5fce8de"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1015.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 18,
+          "question_id": "qst_0018",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "In the incident writeup about KV cache ghost entries causing gradual memory growth and OOM during a surge, what metric name was added for counting when the sanitizer finds negative refcounts?",
+          "expected_doc_ids": [
+            "dsid_1f81f208f51a4aacaca226109bbedc72"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 985.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 19,
+          "question_id": "qst_0019",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "After a recent network change at the SoMa office, users on corporate WiFi saw VPN access to an internal 10.11.x service fail and SSO logins time out because an office bridge was translating client addresses. What device mode misconfiguration caused the source IP rewrite?",
+          "expected_doc_ids": [
+            "dsid_e728a420a02a4ddcb125e6adb09d211e"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 969.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 20,
+          "question_id": "qst_0020",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "In the recent update to the chat completions compatibility adapter, how does the parameter normalizer handle a client sending max_tokens as null compared to leaving it out entirely?",
+          "expected_doc_ids": [
+            "dsid_1c53affffb4f477ca476bec3138b60eb"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 921.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        }
+      ]
+    },
+    "hybrid_rerank": {
+      "mode": "hybrid_rerank",
+      "query_count": 20,
+      "evaluated_query_count": 20,
+      "skipped_query_count": 0,
+      "error_count": 0,
+      "aggregate_metrics": {
+        "recall@10": 0.0,
+        "precision@10": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0,
+        "hit@10": 0.0,
+        "latency_ms": 1022.7
+      },
+      "elapsed_ms": 20469.0,
+      "query_results": [
+        {
+          "index": 1,
+          "question_id": "qst_0001",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What are the default size limits for file uploads and total request size for the new multipart upload support on the OpenAI-compatible API endpoints?",
+          "expected_doc_ids": [
+            "dsid_ae068ee4aa9640159427cd941bef0238"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 954.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "question_id": "qst_0002",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "What is the name of the new metric added so SRE can track when server-side streaming sessions get finalized due to hitting the time limit?",
+          "expected_doc_ids": [
+            "dsid_9550250a59e74f1bbd5612480b2e7100"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 906.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "question_id": "qst_0003",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "What are the acceptance criteria for the project introducing an algorithm to generate interactive UI color states and a Kappa-style elevation scale for dense table and grid components?",
+          "expected_doc_ids": [
+            "dsid_3fd6af404fae48e6b8ea5a57875ef78f"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1157.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "question_id": "qst_0004",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the meeting about onboarding a SaaS product to Google Cloud Marketplace, what did the GCP team recommend for handling delays where a new subscription entitlement is not immediately available during the customer onboarding flow?",
+          "expected_doc_ids": [
+            "dsid_6c4c1c875e704f09b4d791d64d7bc7e5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 968.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "question_id": "qst_0005",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "What failover sequence and recovery targets did MedThink specify for handling an EU region outage, including any limits on how long traffic can shift to the US?",
+          "expected_doc_ids": [
+            "dsid_8e838ab6a98f4cbcb672d41f210ff89c"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 985.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 6,
+          "question_id": "qst_0006",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the draft spec about extending a routing policy engine for automated regional failover, what is the proposed priority order for evaluating different failure signals when deciding whether to shift traffic or fail over?",
+          "expected_doc_ids": [
+            "dsid_184be937d34a412ab5e61366d54d8ed6"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1000.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 7,
+          "question_id": "qst_0007",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In a rolling investigation of a model regression on policy-related prompts after a recent deploy, what was the average triage rubric score change between the older baseline build and the newer optimized build in the first comparison run?",
+          "expected_doc_ids": [
+            "dsid_72ec4a9962ba43e88acd61abbba1052d"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1109.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 8,
+          "question_id": "qst_0008",
+          "question_type": "basic",
+          "source_types": [
+            "google_drive"
+          ],
+          "query": "In the internal shiproom runner notes, what is the target time-to-recover threshold for a verified rollback in staging?",
+          "expected_doc_ids": [
+            "dsid_5fc2dba9f6ac4af2b49b4f546a4298d0"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1141.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 9,
+          "question_id": "qst_0009",
+          "question_type": "basic",
+          "source_types": [
+            "gmail"
+          ],
+          "query": "In the EdgePath evaluation email thread, what alternative Year 1 pricing package did Redwood propose instead of matching the competitor's 50 percent first-year discount and migration credit?",
+          "expected_doc_ids": [
+            "dsid_85deb10a652742baaf28af6149600001"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1078.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 10,
+          "question_id": "qst_0010",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "How does the new alerting approach group model-serving requests by the stages they pass through to reduce noisy alerts and speed up root cause analysis?",
+          "expected_doc_ids": [
+            "dsid_c1a6a71323c04c1ba5445aadea340362"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1062.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 11,
+          "question_id": "qst_0011",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "How long is the validity period for the telemetry driven runbook author certification from the operator training bootcamp?",
+          "expected_doc_ids": [
+            "dsid_46a4cb87db414e769f2df86f01626948"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 938.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 12,
+          "question_id": "qst_0012",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "What was identified as the root cause of the intermittent VPN connectivity blackholes and duplicate IP warnings for users on the corporate Wi-Fi in the SF2 building behind a specific edge switch?",
+          "expected_doc_ids": [
+            "dsid_59cb294da8964683bb165a3bb615df71"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 984.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 13,
+          "question_id": "qst_0013",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the recommended two-stage process for rotating the signing credentials used by GPU image build and promotion pipelines, including how to cut over safely and roll back if something goes wrong?",
+          "expected_doc_ids": [
+            "dsid_f1b208f3637e4987aeab371242a5bea5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1063.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 14,
+          "question_id": "qst_0014",
+          "question_type": "basic",
+          "source_types": [
+            "fireflies"
+          ],
+          "query": "In the on-prem private upgrade deep dive with an air-gapped healthcare customer, what did they describe as their current rollback approach when an upgrade goes wrong?",
+          "expected_doc_ids": [
+            "dsid_9ed01291d81947f49500df5fb28ab724"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 953.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 15,
+          "question_id": "qst_0015",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What was the high-percentile latency concern reported after a smoke test of about 50 concurrent streaming chat sessions for Satellite Grove?",
+          "expected_doc_ids": [
+            "dsid_e75bbf328fe349d2bb39e29b1ed7c9d5"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 953.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 16,
+          "question_id": "qst_0016",
+          "question_type": "basic",
+          "source_types": [
+            "confluence"
+          ],
+          "query": "What is the company policy for how long contractor access should last by default before it expires, according to the access and permissions playbook?",
+          "expected_doc_ids": [
+            "dsid_ba7d1565b0694e359983bccaa4bf5977"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 984.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 17,
+          "question_id": "qst_0017",
+          "question_type": "basic",
+          "source_types": [
+            "hubspot"
+          ],
+          "query": "What service credit percentages were proposed in the tiered uptime SLA counteroffer for the maritime logistics SaaS customer using dedicated GPU capacity?",
+          "expected_doc_ids": [
+            "dsid_03af1e44970d4d6db6e85bc2c5fce8de"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1000.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 18,
+          "question_id": "qst_0018",
+          "question_type": "basic",
+          "source_types": [
+            "linear"
+          ],
+          "query": "In the incident writeup about KV cache ghost entries causing gradual memory growth and OOM during a surge, what metric name was added for counting when the sanitizer finds negative refcounts?",
+          "expected_doc_ids": [
+            "dsid_1f81f208f51a4aacaca226109bbedc72"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1000.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 19,
+          "question_id": "qst_0019",
+          "question_type": "basic",
+          "source_types": [
+            "jira"
+          ],
+          "query": "After a recent network change at the SoMa office, users on corporate WiFi saw VPN access to an internal 10.11.x service fail and SSO logins time out because an office bridge was translating client addresses. What device mode misconfiguration caused the source IP rewrite?",
+          "expected_doc_ids": [
+            "dsid_e728a420a02a4ddcb125e6adb09d211e"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1032.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 20,
+          "question_id": "qst_0020",
+          "question_type": "basic",
+          "source_types": [
+            "github"
+          ],
+          "query": "In the recent update to the chat completions compatibility adapter, how does the parameter normalizer handle a client sending max_tokens as null compared to leaving it out entirely?",
+          "expected_doc_ids": [
+            "dsid_1c53affffb4f477ca476bec3138b60eb"
+          ],
+          "retrieved_doc_ids": [],
+          "metrics": {
+            "recall@10": 0.0,
+            "precision@10": 0.0,
+            "mrr@10": 0.0,
+            "ndcg@10": 0.0,
+            "hit@10": 0.0,
+            "gold_doc_count": 1.0,
+            "retrieved_doc_count": 0.0,
+            "latency_ms": 1187.0
+          },
+          "skipped": false,
+          "error": null,
+          "results": []
+        }
+      ]
+    }
+  },
+  "total_elapsed_ms": 64750.0
+}

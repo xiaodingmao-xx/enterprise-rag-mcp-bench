@@ -423,19 +423,48 @@ class IngestionPipeline:
             logger.info("\n📋 Stage 1: File Integrity Check")
             _notify("integrity", 1)
             
+            _t0 = time.monotonic()
             file_hash = self.integrity_checker.compute_sha256(str(file_path))
             logger.info(f"  File hash: {file_hash[:16]}...")
             
             if not self.force and self.integrity_checker.should_skip(file_hash):
                 logger.info(f"  ⏭️  File already processed, skipping (use force=True to reprocess)")
+                integrity_data = {
+                    "method": "sha256",
+                    "file_hash": file_hash,
+                    "skipped": True,
+                    "reason": "already_processed",
+                    "message": "File already processed; ingestion skipped.",
+                    "collection": self.collection,
+                }
+                stages["integrity"] = integrity_data
+                if trace is not None:
+                    trace.metadata["ingestion_status"] = "skipped"
+                    trace.metadata["skip_reason"] = "already_processed"
+                    trace.record_stage(
+                        "integrity",
+                        integrity_data,
+                        elapsed_ms=(time.monotonic() - _t0) * 1000.0,
+                    )
                 return PipelineResult(
                     success=True,
                     file_path=str(file_path),
                     doc_id=file_hash,
-                    stages={"integrity": {"skipped": True, "reason": "already_processed"}}
+                    stages=stages,
                 )
             
-            stages["integrity"] = {"file_hash": file_hash, "skipped": False}
+            stages["integrity"] = {
+                "method": "sha256",
+                "file_hash": file_hash,
+                "skipped": False,
+                "collection": self.collection,
+            }
+            if trace is not None:
+                trace.record_stage(
+                    "integrity",
+                    stages["integrity"],
+                    elapsed_ms=(time.monotonic() - _t0) * 1000.0,
+                )
             logger.info("  ✓ File needs processing")
             
             # ─────────────────────────────────────────────────────────────
@@ -465,6 +494,7 @@ class IngestionPipeline:
             _elapsed = (time.monotonic() - _t0) * 1000.0
 
             quality_data = quality_report.to_dict()
+            quality_data["method"] = "pdf_quality_checker"
             stages["quality"] = quality_data
             if trace is not None:
                 trace.record_stage("quality", quality_data, elapsed_ms=_elapsed)
@@ -764,6 +794,7 @@ class IngestionPipeline:
                     for img in images
                 ]
                 trace.record_stage("upsert", {
+                    "method": "vector+bm25+image_storage",
                     "dense_store": {
                         "backend": "ChromaDB",
                         "collection": self.collection,

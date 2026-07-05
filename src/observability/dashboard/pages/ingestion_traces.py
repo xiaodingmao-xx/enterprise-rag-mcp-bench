@@ -14,7 +14,7 @@ Layout:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import streamlit as st
 
@@ -37,9 +37,8 @@ def render() -> None:
     st.subheader(f"📋 Trace History ({len(traces)})")
 
     for idx, trace in enumerate(traces):
-        trace_id = trace.get("trace_id", "unknown")
         started = svc.format_china_time(trace.get("started_at"))
-        total_ms = trace.get("elapsed_ms")
+        total_ms = trace.get("elapsed_ms", trace.get("total_elapsed_ms"))
         total_label = f"{total_ms:.0f} ms" if total_ms is not None else "—"
         meta = trace.get("metadata", {})
         source_path = meta.get("source_path", "—")
@@ -61,6 +60,7 @@ def render() -> None:
             transform_d = stages_by_name.get("transform", {}).get("data", {})
             embed_d = stages_by_name.get("embed", {}).get("data", {})
             upsert_d = stages_by_name.get("upsert", {}).get("data", {})
+            already_processed = _is_already_processed_trace(trace, stages_by_name)
 
             c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
@@ -73,6 +73,12 @@ def render() -> None:
                 st.metric("Vectors", upsert_d.get("vector_count", 0))
             with c5:
                 st.metric("Total Time", total_label)
+
+            if already_processed:
+                st.info(
+                    "**文件已经处理过，已跳过重复摄取。** "
+                    "如需重新处理，请使用 force=True 或先删除该文档的历史记录。"
+                )
 
             st.divider()
 
@@ -95,7 +101,15 @@ def render() -> None:
                 ])
 
             # ── Diagnostics ───────────────────────────────────
-            _render_ingestion_diagnostics(stages_by_name, load_d, split_d, transform_d, embed_d, upsert_d)
+            _render_ingestion_diagnostics(
+                stages_by_name,
+                load_d,
+                split_d,
+                transform_d,
+                embed_d,
+                upsert_d,
+                already_processed=already_processed,
+            )
 
             st.divider()
 
@@ -103,6 +117,8 @@ def render() -> None:
             st.markdown("#### 🔍 Stage Details")
 
             tab_defs = []
+            if "integrity" in stages_by_name:
+                tab_defs.append(("Integrity", "integrity"))
             if "load" in stages_by_name:
                 tab_defs.append(("📄 Load", "load"))
             if "split" in stages_by_name:
@@ -124,7 +140,9 @@ def render() -> None:
                         if elapsed is not None:
                             st.caption(f"⏱️ {elapsed:.1f} ms")
 
-                        if key == "load":
+                        if key == "integrity":
+                            _render_integrity_stage(data)
+                        elif key == "load":
                             _render_load_stage(data, trace_idx=idx)
                         elif key == "split":
                             _render_split_stage(data, trace_idx=idx)
@@ -138,6 +156,25 @@ def render() -> None:
                 st.info("No stage details available.")
 
 
+def _is_already_processed_trace(
+    trace: Dict[str, Any],
+    stages_by_name: Dict[str, Any],
+) -> bool:
+    """Return True when ingestion skipped because this file already exists."""
+    metadata = trace.get("metadata", {})
+    if isinstance(metadata, dict) and metadata.get("skip_reason") == "already_processed":
+        return True
+
+    integrity_data = stages_by_name.get("integrity", {}).get("data", {})
+    if not isinstance(integrity_data, dict):
+        return False
+
+    return (
+        integrity_data.get("skipped") is True
+        and integrity_data.get("reason") == "already_processed"
+    )
+
+
 def _render_ingestion_diagnostics(
     stages_by_name: Dict[str, Any],
     load_d: Dict[str, Any],
@@ -145,8 +182,13 @@ def _render_ingestion_diagnostics(
     transform_d: Dict[str, Any],
     embed_d: Dict[str, Any],
     upsert_d: Dict[str, Any],
+    *,
+    already_processed: bool = False,
 ) -> None:
     """Render diagnostic hints for ingestion pipeline stages."""
+    if already_processed:
+        return
+
     expected = ["load", "split", "transform", "embed", "upsert"]
     present = [s for s in expected if s in stages_by_name]
     missing = [s for s in expected if s not in stages_by_name]
@@ -198,6 +240,29 @@ def _render_ingestion_diagnostics(
 # ═══════════════════════════════════════════════════════════════
 # Per-stage renderers
 # ═══════════════════════════════════════════════════════════════
+
+def _render_integrity_stage(data: Dict[str, Any]) -> None:
+    """Render file integrity and skip status."""
+    skipped = data.get("skipped") is True
+    reason = data.get("reason", "")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Status", "Already processed" if skipped else "Needs processing")
+    with c2:
+        st.metric("Reason", reason or "none")
+    with c3:
+        st.metric("Method", data.get("method", "sha256"))
+
+    file_hash = str(data.get("file_hash", ""))
+    if file_hash:
+        st.markdown("**File Hash**")
+        st.code(file_hash, language=None)
+
+    message = data.get("message")
+    if skipped:
+        st.info(message or "File already processed; ingestion skipped.")
+
 
 def _render_load_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
     """Render Load stage: raw document preview."""
