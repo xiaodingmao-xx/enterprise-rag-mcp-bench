@@ -2,7 +2,7 @@
 # Copy to config/settings.yaml and set secrets through environment variables.
 
 llm:
-  provider: "openai"  # Options: openai, azure, ollama, deepseek
+  provider: "openai"  # Options: openai, azure, ollama, deepseek, bailian
   model: "gpt-4o-mini"
   deployment_name: "gpt-4o-mini"
   api_version: "${AZURE_OPENAI_API_VERSION:-2024-02-15-preview}"
@@ -10,6 +10,14 @@ llm:
   api_key: "${LLM_API_KEY:-}"
   temperature: 0.0
   max_tokens: 4096
+  # Alibaba Cloud Bailian / Model Studio example:
+  # provider: "bailian"
+  # model: "qwen-plus"
+  # deployment_name: "qwen-plus"
+  # base_url: "${BAILIAN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+  # api_key: "${DASHSCOPE_API_KEY:-}"
+  # extra_body:
+  #   enable_thinking: false
 
 embedding:
   provider: "openai"  # Options: openai, azure, ollama

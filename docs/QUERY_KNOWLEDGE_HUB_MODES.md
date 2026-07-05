@@ -122,7 +122,7 @@ No retrieval results:
 
 ## LLM Configuration
 
-Answer mode reuses the existing `llm` settings and provider factory. Configure `config/settings.yaml` with an existing provider such as `openai`, `azure`, `deepseek`, or `ollama`.
+Answer mode reuses the existing `llm` settings and provider factory. Configure `config/settings.yaml` with an existing provider such as `openai`, `azure`, `deepseek`, `bailian`, or `ollama`.
 
 ```yaml
 llm:
@@ -144,6 +144,19 @@ response:
     timeout_seconds: 20
     hallucination_guard:
       enabled: true
+```
+
+Alibaba Cloud Bailian / Model Studio can be configured through its
+OpenAI-compatible endpoint:
+
+```yaml
+llm:
+  provider: "bailian"
+  model: "qwen-plus"
+  base_url: "${BAILIAN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+  api_key: "${DASHSCOPE_API_KEY:-}"
+  temperature: 0.0
+  max_tokens: 4096
 ```
 
 Contexts mode does not require an LLM.

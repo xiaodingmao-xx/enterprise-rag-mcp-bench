@@ -1,6 +1,6 @@
 """Smoke tests for LLM provider implementations.
 
-This module tests the OpenAI, Azure, and DeepSeek LLM providers
+This module tests the OpenAI, Azure, DeepSeek, and Bailian LLM providers
 using mocked HTTP responses to avoid real API calls.
 """
 
@@ -15,6 +15,8 @@ import pytest
 from src.libs.llm import (
     AzureLLM,
     AzureLLMError,
+    BailianLLM,
+    BailianLLMError,
     BaseLLM,
     DeepSeekLLM,
     DeepSeekLLMError,
@@ -42,6 +44,12 @@ def ensure_providers_registered():
         LLMFactory.register_provider("openai", OpenAILLM)
     if "azure" not in LLMFactory._PROVIDERS:
         LLMFactory.register_provider("azure", AzureLLM)
+    if "bailian" not in LLMFactory._PROVIDERS:
+        LLMFactory.register_provider("bailian", BailianLLM)
+    if "aliyun_bailian" not in LLMFactory._PROVIDERS:
+        LLMFactory.register_provider("aliyun_bailian", BailianLLM)
+    if "dashscope" not in LLMFactory._PROVIDERS:
+        LLMFactory.register_provider("dashscope", BailianLLM)
     if "deepseek" not in LLMFactory._PROVIDERS:
         LLMFactory.register_provider("deepseek", DeepSeekLLM)
     yield
@@ -140,6 +148,13 @@ class TestLLMFactoryRegistration:
     def test_deepseek_registered(self):
         """DeepSeek provider should be registered."""
         assert "deepseek" in LLMFactory.list_providers()
+
+    def test_bailian_registered(self):
+        """Bailian provider should be registered."""
+        providers = LLMFactory.list_providers()
+        assert "bailian" in providers
+        assert "aliyun_bailian" in providers
+        assert "dashscope" in providers
     
     def test_factory_creates_openai(self):
         """Factory should create OpenAI instance when provider=openai."""
@@ -165,6 +180,22 @@ class TestLLMFactoryRegistration:
         with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"}):
             llm = LLMFactory.create(settings)
             assert isinstance(llm, DeepSeekLLM)
+
+    def test_factory_creates_bailian(self):
+        """Factory should create Bailian instance when provider=bailian."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+        with patch.dict("os.environ", {"DASHSCOPE_API_KEY": "test-key"}, clear=True):
+            llm = LLMFactory.create(settings)
+            assert isinstance(llm, BailianLLM)
+
+    def test_factory_creates_bailian_alias(self):
+        """Factory should create Bailian instance through provider alias."""
+        settings = MockSettings(
+            llm=MockLLMSettings(provider="dashscope", model="qwen-plus")
+        )
+        with patch.dict("os.environ", {"DASHSCOPE_API_KEY": "test-key"}, clear=True):
+            llm = LLMFactory.create(settings)
+            assert isinstance(llm, BailianLLM)
     
     def test_factory_unknown_provider_error(self):
         """Factory should raise error for unknown provider."""
@@ -456,6 +487,96 @@ class TestDeepSeekLLM:
 
 
 # -----------------------------------------------------------------------------
+# Alibaba Cloud Bailian LLM Tests
+# -----------------------------------------------------------------------------
+
+
+class TestBailianLLM:
+    """Tests for Alibaba Cloud Bailian LLM implementation."""
+
+    def test_init_with_api_key(self):
+        """Should initialize with provided API key."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+        llm = BailianLLM(settings, api_key="test-key")
+
+        assert llm.api_key == "test-key"
+        assert llm.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert llm.model == "qwen-plus"
+        assert llm._use_azure_auth is False
+        assert llm.api_version is None
+
+    def test_init_with_dashscope_env_var(self):
+        """Should initialize with API key from DASHSCOPE_API_KEY."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+        env_vars = {
+            "OPENAI_API_KEY": "openai-key",
+            "DASHSCOPE_API_KEY": "dashscope-key",
+        }
+        with patch.dict("os.environ", env_vars, clear=True):
+            llm = BailianLLM(settings)
+            assert llm.api_key == "dashscope-key"
+
+    def test_init_with_settings_api_key_and_base_url(self):
+        """Should initialize from settings.yaml fields."""
+        settings = MockSettings(
+            llm=MockLLMSettings(
+                provider="bailian",
+                model="qwen-turbo",
+                api_key="settings-key",
+                base_url=" https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/ ",
+            )
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            llm = BailianLLM(settings)
+            assert llm.api_key == "settings-key"
+            assert (
+                llm.base_url
+                == "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+            )
+
+    def test_init_missing_api_key(self):
+        """Should raise error when API key is missing."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(ValueError, match="Bailian API key not provided"):
+                BailianLLM(settings)
+
+    def test_chat_success(self):
+        """Should call Bailian OpenAI-compatible chat completions endpoint."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+        llm = BailianLLM(settings, api_key="test-key")
+
+        with patch("httpx.Client") as mock_client:
+            mock_post = mock_client.return_value.__enter__.return_value.post
+            mock_post.return_value = make_mock_response("Bailian response", "qwen-plus")
+
+            response = llm.chat([Message(role="user", content="Hello")])
+
+            assert response.content == "Bailian response"
+            assert response.model == "qwen-plus"
+            assert mock_post.call_args.args[0] == (
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            )
+            assert mock_post.call_args.kwargs["headers"]["Authorization"] == (
+                "Bearer test-key"
+            )
+            assert mock_post.call_args.kwargs["json"]["model"] == "qwen-plus"
+
+    def test_chat_api_error(self):
+        """Should raise BailianLLMError on API error."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+        llm = BailianLLM(settings, api_key="test-key")
+
+        with patch("httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = (
+                make_error_response(401, "Unauthorized")
+            )
+
+            with pytest.raises(BailianLLMError, match=r"\[Bailian\] API error"):
+                llm.chat([Message(role="user", content="Hello")])
+
+
+# -----------------------------------------------------------------------------
 # Message Validation Tests
 # -----------------------------------------------------------------------------
 
@@ -466,6 +587,7 @@ class TestMessageValidation:
     @pytest.mark.parametrize("llm_class,api_key_env", [
         (OpenAILLM, "OPENAI_API_KEY"),
         (DeepSeekLLM, "DEEPSEEK_API_KEY"),
+        (BailianLLM, "DASHSCOPE_API_KEY"),
     ])
     def test_empty_content_validation(self, llm_class, api_key_env):
         """Should reject messages with empty content."""
@@ -478,6 +600,7 @@ class TestMessageValidation:
     @pytest.mark.parametrize("llm_class,api_key_env", [
         (OpenAILLM, "OPENAI_API_KEY"),
         (DeepSeekLLM, "DEEPSEEK_API_KEY"),
+        (BailianLLM, "DASHSCOPE_API_KEY"),
     ])
     def test_valid_roles_accepted(self, llm_class, api_key_env):
         """Should accept valid roles: system, user, assistant."""
@@ -537,3 +660,18 @@ class TestLLMIntegration:
                 
                 response = llm.chat([Message(role="user", content="Test")])
                 assert response.content == "DeepSeek integration response"
+
+    def test_factory_to_chat_flow_bailian(self):
+        """Test complete flow: factory -> create -> chat for Bailian."""
+        settings = MockSettings(llm=MockLLMSettings(provider="bailian", model="qwen-plus"))
+
+        with patch.dict("os.environ", {"DASHSCOPE_API_KEY": "test-key"}, clear=True):
+            llm = LLMFactory.create(settings)
+
+            with patch("httpx.Client") as mock_client:
+                mock_client.return_value.__enter__.return_value.post.return_value = (
+                    make_mock_response("Bailian integration response", "qwen-plus")
+                )
+
+                response = llm.chat([Message(role="user", content="Test")])
+                assert response.content == "Bailian integration response"
