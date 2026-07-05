@@ -1,0 +1,318 @@
+{
+  "timestamp": "20260705_171253",
+  "dataset": "H:\\Learning\\postgraduate\\0Resume\\project\\MODULAR-RAG-MCP-SERVER-main\\tests\\fixtures\\golden_test_set.json",
+  "config": "H:\\Learning\\postgraduate\\0Resume\\project\\MODULAR-RAG-MCP-SERVER-main\\config\\settings.yaml",
+  "collection": "default",
+  "top_k": 10,
+  "candidate_k": 20,
+  "modes": [
+    "dense",
+    "bm25",
+    "hybrid",
+    "hybrid_rerank"
+  ],
+  "test_case_count": 5,
+  "results": {
+    "dense": {
+      "mode": "dense",
+      "query_count": 5,
+      "evaluated_query_count": 0,
+      "skipped_query_count": 5,
+      "aggregate_metrics": {},
+      "elapsed_ms": 0.0,
+      "query_results": [
+        {
+          "index": 1,
+          "query": "What is Modular RAG?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "query": "How to configure Azure OpenAI?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "query": "What is hybrid search and how does it work?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "query": "Explain the chunking strategy",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "query": "What evaluation metrics are supported?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        }
+      ]
+    },
+    "bm25": {
+      "mode": "bm25",
+      "query_count": 5,
+      "evaluated_query_count": 0,
+      "skipped_query_count": 5,
+      "aggregate_metrics": {},
+      "elapsed_ms": 0.0,
+      "query_results": [
+        {
+          "index": 1,
+          "query": "What is Modular RAG?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "query": "How to configure Azure OpenAI?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "query": "What is hybrid search and how does it work?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "query": "Explain the chunking strategy",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "query": "What evaluation metrics are supported?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        }
+      ]
+    },
+    "hybrid": {
+      "mode": "hybrid",
+      "query_count": 5,
+      "evaluated_query_count": 0,
+      "skipped_query_count": 5,
+      "aggregate_metrics": {},
+      "elapsed_ms": 0.0,
+      "query_results": [
+        {
+          "index": 1,
+          "query": "What is Modular RAG?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "query": "How to configure Azure OpenAI?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "query": "What is hybrid search and how does it work?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "query": "Explain the chunking strategy",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "query": "What evaluation metrics are supported?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        }
+      ]
+    },
+    "hybrid_rerank": {
+      "mode": "hybrid_rerank",
+      "query_count": 5,
+      "evaluated_query_count": 0,
+      "skipped_query_count": 5,
+      "aggregate_metrics": {},
+      "elapsed_ms": 0.0,
+      "query_results": [
+        {
+          "index": 1,
+          "query": "What is Modular RAG?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 2,
+          "query": "How to configure Azure OpenAI?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 3,
+          "query": "What is hybrid search and how does it work?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 4,
+          "query": "Explain the chunking strategy",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        },
+        {
+          "index": 5,
+          "query": "What evaluation metrics are supported?",
+          "relevance_type": "none",
+          "relevant_labels": [],
+          "retrieved_chunk_ids": [],
+          "retrieved_sources": [],
+          "metrics": {},
+          "elapsed_ms": 0.0,
+          "skipped": true,
+          "error": null,
+          "results": []
+        }
+      ]
+    }
+  },
+  "total_elapsed_ms": 0.0
+}
