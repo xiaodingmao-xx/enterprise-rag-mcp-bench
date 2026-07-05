@@ -22,14 +22,24 @@ def test_image_preview_error_detects_missing_file(tmp_path: Path) -> None:
     assert error == "file missing"
 
 
-def test_image_preview_error_detects_too_wide_preview(tmp_path: Path) -> None:
+def test_image_preview_error_detects_too_long_image(tmp_path: Path) -> None:
     image_path = tmp_path / "wide.png"
     Image.new("RGB", (1000, 1), color="white").save(image_path)
 
     error = _image_preview_error(image_path, preview_width=200)
 
     assert error is not None
-    assert "aspect ratio too wide" in error
+    assert "aspect ratio too long" in error
+
+
+def test_image_preview_error_detects_near_black_image(tmp_path: Path) -> None:
+    image_path = tmp_path / "black.png"
+    Image.new("RGB", (200, 125), color="black").save(image_path)
+
+    error = _image_preview_error(image_path, preview_width=200)
+
+    assert error is not None
+    assert "near-black image skipped" in error
 
 
 def test_image_preview_error_detects_invalid_image(tmp_path: Path) -> None:

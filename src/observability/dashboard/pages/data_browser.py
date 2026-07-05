@@ -13,12 +13,33 @@ import math
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageStat, UnidentifiedImageError
 
 from src.observability.dashboard.services.data_service import DataService
 
 
 IMAGE_PREVIEW_WIDTH = 200
+MAX_PREVIEW_ASPECT_RATIO = 8.0
+BLACK_PIXEL_THRESHOLD = 8
+BLACK_PIXEL_RATIO = 0.985
+BLACK_MEAN_THRESHOLD = 4.0
+
+
+def _is_nearly_black_image(image: Image.Image) -> bool:
+    """Return True for solid or near-solid black images."""
+    sample = image.convert("L")
+    sample.thumbnail((64, 64))
+
+    histogram = sample.histogram()
+    total_pixels = max(1, sample.width * sample.height)
+    dark_pixels = sum(histogram[: BLACK_PIXEL_THRESHOLD + 1])
+    dark_ratio = dark_pixels / total_pixels
+    mean_luminance = ImageStat.Stat(sample).mean[0]
+
+    return (
+        dark_ratio >= BLACK_PIXEL_RATIO
+        and mean_luminance <= BLACK_MEAN_THRESHOLD
+    )
 
 
 def _image_preview_error(
@@ -35,19 +56,30 @@ def _image_preview_error(
     try:
         with Image.open(image_path) as image:
             width, height = image.size
-            image.verify()
-    except (OSError, UnidentifiedImageError, ValueError) as exc:
+            if width <= 0 or height <= 0:
+                return f"invalid image size: {width}x{height}"
+
+            aspect_ratio = max(width / height, height / width)
+            if aspect_ratio > MAX_PREVIEW_ASPECT_RATIO:
+                return f"image aspect ratio too long: {width}x{height}"
+
+            preview_height = math.floor(height * preview_width / width)
+            if preview_height <= 0:
+                return (
+                    f"image aspect ratio too wide for {preview_width}px preview: "
+                    f"{width}x{height}"
+                )
+
+            image.load()
+            if _is_nearly_black_image(image):
+                return f"near-black image skipped: {width}x{height}"
+    except (
+        OSError,
+        UnidentifiedImageError,
+        ValueError,
+        Image.DecompressionBombError,
+    ) as exc:
         return f"invalid image: {exc}"
-
-    if width <= 0 or height <= 0:
-        return f"invalid image size: {width}x{height}"
-
-    preview_height = math.floor(height * preview_width / width)
-    if preview_height <= 0:
-        return (
-            f"image aspect ratio too wide for {preview_width}px preview: "
-            f"{width}x{height}"
-        )
 
     return None
 
