@@ -187,6 +187,25 @@ def test_encode_large_batch():
     assert len(vectors) == 10
 
 
+def test_encode_respects_provider_max_batch_size():
+    """Test provider-specific batch caps override larger encoder batch sizes."""
+    embedding = FakeEmbedding(dimension=4)
+    embedding.max_batch_size = 10
+    encoder = DenseEncoder(embedding, batch_size=20)
+
+    chunks = [
+        Chunk(id=str(i), text=f"Chunk {i}", metadata={"source_path": "test.pdf"})
+        for i in range(25)
+    ]
+    vectors = encoder.encode(chunks)
+
+    assert embedding.call_count == 3
+    assert [len(batch) for batch in embedding.call_history] == [10, 10, 5]
+    assert encoder.batch_size == 20
+    assert encoder.effective_batch_size == 10
+    assert len(vectors) == 25
+
+
 # ============================================================================
 # Input Validation Tests
 # ============================================================================

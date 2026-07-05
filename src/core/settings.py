@@ -120,6 +120,15 @@ def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     return value
 
 
+def _optional_positive_int(data: Dict[str, Any], key: str, path: str) -> Optional[int]:
+    if key not in data or data.get(key) is None:
+        return None
+    value = data.get(key)
+    if not isinstance(value, int) or value <= 0:
+        raise SettingsError(f"Expected positive integer for field: {path}.{key}")
+    return value
+
+
 def _normalise_extensions(value: Any, path: str) -> List[str]:
     if value is None:
         return DEFAULT_SUPPORTED_EXTENSIONS.copy()
@@ -180,6 +189,7 @@ class EmbeddingSettings:
     provider: str
     model: str
     dimensions: int
+    max_batch_size: Optional[int] = None
     # Azure-specific optional fields
     api_key: Optional[str] = None
     api_version: Optional[str] = None
@@ -499,6 +509,11 @@ class Settings:
                 provider=_require_str(embedding, "provider", "embedding"),
                 model=_require_str(embedding, "model", "embedding"),
                 dimensions=_require_int(embedding, "dimensions", "embedding"),
+                max_batch_size=_optional_positive_int(
+                    embedding,
+                    "max_batch_size",
+                    "embedding",
+                ),
                 api_key=embedding.get("api_key"),
                 api_version=embedding.get("api_version"),
                 azure_endpoint=embedding.get("azure_endpoint"),

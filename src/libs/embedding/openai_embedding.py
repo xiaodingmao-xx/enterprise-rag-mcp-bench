@@ -44,6 +44,8 @@ class OpenAIEmbedding(BaseEmbedding):
     """
     
     DEFAULT_BASE_URL = "https://api.openai.com/v1"
+    DEFAULT_OPENAI_MAX_BATCH_SIZE = 2048
+    DEFAULT_COMPAT_MAX_BATCH_SIZE = 10
     
     def __init__(
         self,
@@ -105,6 +107,31 @@ class OpenAIEmbedding(BaseEmbedding):
         
         # Store any additional kwargs for future use
         self._extra_config = kwargs
+        self.max_batch_size = self._resolve_max_batch_size(
+            getattr(settings.embedding, "max_batch_size", None)
+        )
+
+    def _resolve_max_batch_size(self, configured_value: Any) -> int:
+        if configured_value is not None:
+            try:
+                parsed = int(configured_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"embedding.max_batch_size must be a positive integer, got {configured_value!r}"
+                ) from exc
+            if parsed <= 0:
+                raise ValueError(
+                    f"embedding.max_batch_size must be a positive integer, got {parsed}"
+                )
+            return parsed
+
+        is_default_openai = (
+            self.base_url.rstrip("/") == self.DEFAULT_BASE_URL.rstrip("/")
+            and not self._use_azure_auth
+        )
+        if is_default_openai:
+            return self.DEFAULT_OPENAI_MAX_BATCH_SIZE
+        return self.DEFAULT_COMPAT_MAX_BATCH_SIZE
     
     def embed(
         self,
@@ -152,33 +179,49 @@ class OpenAIEmbedding(BaseEmbedding):
         client = OpenAI(**client_kwargs)
         
         # Prepare API call parameters
-        api_params = {
-            "input": texts,
+        base_api_params = {
             "model": self.model,
         }
-        
+
         # Add dimensions if specified (only for text-embedding-3-* models)
         # text-embedding-ada-002 does NOT support the dimensions parameter
         dimensions = kwargs.get("dimensions", self.dimensions)
         if dimensions is not None and self.model.startswith("text-embedding-3"):
-            api_params["dimensions"] = dimensions
-        
-        # Call OpenAI API
-        try:
-            response = client.embeddings.create(**api_params)
-        except Exception as e:
-            raise OpenAIEmbeddingError(
-                f"OpenAI Embeddings API call failed: {e}"
-            ) from e
-        
-        # Extract embeddings from response
-        # Response format: response.data is a list of objects with .embedding attribute
-        try:
-            embeddings = [item.embedding for item in response.data]
-        except (AttributeError, KeyError) as e:
-            raise OpenAIEmbeddingError(
-                f"Failed to parse OpenAI Embeddings API response: {e}"
-            ) from e
+            base_api_params["dimensions"] = dimensions
+
+        embeddings: List[List[float]] = []
+        for batch_start in range(0, len(texts), self.max_batch_size):
+            batch_end = min(batch_start + self.max_batch_size, len(texts))
+            batch_texts = texts[batch_start:batch_end]
+            api_params = dict(base_api_params)
+            api_params["input"] = batch_texts
+
+            # Call OpenAI API
+            try:
+                response = client.embeddings.create(**api_params)
+            except Exception as e:
+                raise OpenAIEmbeddingError(
+                    f"OpenAI Embeddings API call failed for batch "
+                    f"{batch_start}-{batch_end}: {e}"
+                ) from e
+
+            # Extract embeddings from response
+            # Response format: response.data is a list of objects with .embedding attribute
+            try:
+                batch_embeddings = [item.embedding for item in response.data]
+            except (AttributeError, KeyError) as e:
+                raise OpenAIEmbeddingError(
+                    f"Failed to parse OpenAI Embeddings API response for batch "
+                    f"{batch_start}-{batch_end}: {e}"
+                ) from e
+
+            if len(batch_embeddings) != len(batch_texts):
+                raise OpenAIEmbeddingError(
+                    f"Output length mismatch for batch {batch_start}-{batch_end}: "
+                    f"expected {len(batch_texts)}, got {len(batch_embeddings)}"
+                )
+
+            embeddings.extend(batch_embeddings)
         
         # Verify output matches input length
         if len(embeddings) != len(texts):

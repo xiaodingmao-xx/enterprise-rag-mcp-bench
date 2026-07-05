@@ -23,6 +23,7 @@ embedding:
   provider: "openai"  # Options: openai, azure, ollama
   model: "text-embedding-3-small"
   dimensions: 1536
+  max_batch_size: 10  # Keep 10 for OpenAI-compatible gateways with stricter batch limits.
   base_url: "${EMBEDDING_BASE_URL:-https://api.openai.com/v1}"
   api_key: "${EMBEDDING_API_KEY:-}"
 

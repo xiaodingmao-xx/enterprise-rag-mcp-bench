@@ -25,6 +25,7 @@ def test_load_settings_success(tmp_path: Path) -> None:
       provider: openai
       model: text-embedding-3-small
       dimensions: 1536
+      max_batch_size: 10
     vector_store:
       provider: chroma
       persist_directory: ./data/db/chroma
@@ -63,6 +64,7 @@ def test_load_settings_success(tmp_path: Path) -> None:
 
     assert settings.llm.provider == "openai"
     assert settings.embedding.dimensions == 1536
+    assert settings.embedding.max_batch_size == 10
     assert settings.vector_store.collection_name == "knowledge_hub"
     assert settings.retrieval.rrf_k == 60
     assert settings.rerank.provider == "none"

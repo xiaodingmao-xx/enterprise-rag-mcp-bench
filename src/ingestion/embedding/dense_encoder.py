@@ -62,6 +62,21 @@ class DenseEncoder:
         
         self.embedding = embedding
         self.batch_size = batch_size
+        self.effective_batch_size = self._resolve_effective_batch_size()
+
+    def _resolve_effective_batch_size(self) -> int:
+        provider_max_batch_size = getattr(self.embedding, "max_batch_size", None)
+        if provider_max_batch_size is None:
+            return self.batch_size
+
+        try:
+            max_batch_size = int(provider_max_batch_size)
+        except (TypeError, ValueError):
+            return self.batch_size
+
+        if max_batch_size <= 0:
+            return self.batch_size
+        return min(self.batch_size, max_batch_size)
     
     def encode(
         self,
@@ -112,8 +127,11 @@ class DenseEncoder:
         # Process in batches
         all_vectors: List[List[float]] = []
         
-        for batch_start in range(0, len(texts), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(texts))
+        batch_size = self._resolve_effective_batch_size()
+        self.effective_batch_size = batch_size
+
+        for batch_start in range(0, len(texts), batch_size):
+            batch_end = min(batch_start + batch_size, len(texts))
             batch_texts = texts[batch_start:batch_end]
             
             try:
@@ -170,4 +188,5 @@ class DenseEncoder:
         """
         if num_chunks <= 0:
             return 0
-        return (num_chunks + self.batch_size - 1) // self.batch_size
+        batch_size = self._resolve_effective_batch_size()
+        return (num_chunks + batch_size - 1) // batch_size

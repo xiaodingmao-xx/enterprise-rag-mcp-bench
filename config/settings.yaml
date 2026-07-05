@@ -35,6 +35,7 @@ embedding:
   provider: "openai"  # Options: openai, azure, ollama
   model: "text-embedding-v4"
   dimensions: 1536  # text-embedding-ada-002 固定维度 (不传递给API, 仅用于验证)
+  max_batch_size: 10  # OpenAI-compatible DashScope embeddings reject batches larger than 10.
   # Azure-compatible settings (azure_endpoint triggers Azure compat mode):
   # azure_endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
   # deployment_name: "text-embedding-v4"
