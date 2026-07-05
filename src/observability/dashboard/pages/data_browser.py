@@ -9,11 +9,62 @@ Layout:
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import streamlit as st
+from PIL import Image, UnidentifiedImageError
 
 from src.observability.dashboard.services.data_service import DataService
+
+
+IMAGE_PREVIEW_WIDTH = 200
+
+
+def _image_preview_error(
+    image_path: Path,
+    *,
+    preview_width: int = IMAGE_PREVIEW_WIDTH,
+) -> str | None:
+    """Return a user-facing error if an image cannot be safely previewed."""
+    if not image_path.exists():
+        return "file missing"
+    if preview_width <= 0:
+        return "invalid preview width"
+
+    try:
+        with Image.open(image_path) as image:
+            width, height = image.size
+            image.verify()
+    except (OSError, UnidentifiedImageError, ValueError) as exc:
+        return f"invalid image: {exc}"
+
+    if width <= 0 or height <= 0:
+        return f"invalid image size: {width}x{height}"
+
+    preview_height = math.floor(height * preview_width / width)
+    if preview_height <= 0:
+        return (
+            f"image aspect ratio too wide for {preview_width}px preview: "
+            f"{width}x{height}"
+        )
+
+    return None
+
+
+def _render_image_preview(img: dict, *, width: int = IMAGE_PREVIEW_WIDTH) -> None:
+    """Render one image preview without letting bad files crash the page."""
+    image_id = str(img.get("image_id", "image"))
+    img_path = Path(str(img.get("file_path", "")))
+    error = _image_preview_error(img_path, preview_width=width)
+    if error is not None:
+        st.caption(f"{image_id} ({error})")
+        return
+
+    try:
+        st.image(str(img_path), caption=image_id, width=width)
+    except (OSError, UnidentifiedImageError, ValueError) as exc:
+        st.caption(f"{image_id} (preview failed: {exc})")
 
 
 def render() -> None:
@@ -154,8 +205,4 @@ def render() -> None:
                 img_cols = st.columns(min(len(images), 4))
                 for iidx, img in enumerate(images):
                     with img_cols[iidx % len(img_cols)]:
-                        img_path = Path(img.get("file_path", ""))
-                        if img_path.exists():
-                            st.image(str(img_path), caption=img["image_id"], width=200)
-                        else:
-                            st.caption(f"{img['image_id']} (file missing)")
+                        _render_image_preview(img)
