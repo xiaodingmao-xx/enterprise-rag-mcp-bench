@@ -52,6 +52,7 @@ from src.ingestion.storage.sparse_indexer_factory import (
 )
 from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.ingestion.storage.image_storage import ImageStorage
+from src.ingestion.storage_locks import get_storage_lock
 
 logger = get_logger(__name__)
 
@@ -410,6 +411,7 @@ class IngestionPipeline:
         file_path = Path(file_path)
         stages: Dict[str, Any] = {}
         _total_stages = 7
+        _storage_lock = None
 
         def _notify(stage_name: str, step: int) -> None:
             if on_progress is not None:
@@ -730,6 +732,18 @@ class IngestionPipeline:
             
             # 7a: Vector Upsert
             logger.info("  7a. Vector Storage (ChromaDB)...")
+            upload_config = getattr(
+                getattr(getattr(self, "settings", None), "ingestion", None),
+                "concurrent_upload",
+                {},
+            )
+            if not isinstance(upload_config, dict):
+                upload_config = {}
+            _storage_lock = get_storage_lock(
+                self.collection,
+                upload_config.get("storage_lock_scope", "collection"),
+            )
+            _storage_lock.acquire()
             _t0_storage = time.monotonic()
             _t0_chroma = time.monotonic()
             delete_existing = getattr(self, "_delete_existing_vectors_for_source", None)
@@ -880,6 +894,8 @@ class IngestionPipeline:
             # Mark Success
             # ─────────────────────────────────────────────────────────────
             self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
+            _storage_lock.release()
+            _storage_lock = None
             
             logger.info("\n" + "=" * 60)
             logger.info("✅ Pipeline completed successfully!")
@@ -899,6 +915,12 @@ class IngestionPipeline:
             )
             
         except Exception as e:
+            if _storage_lock is not None:
+                try:
+                    _storage_lock.release()
+                except RuntimeError:
+                    pass
+                _storage_lock = None
             logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
             failed_hash = locals().get("file_hash")
             if failed_hash:

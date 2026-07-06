@@ -8,12 +8,42 @@ Layout:
 
 from __future__ import annotations
 
+import re
+import uuid
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import streamlit as st
 
 from src.observability.dashboard.services.data_service import DataService
+
+
+@st.cache_resource
+def _get_ingestion_queue():
+    from src.core.settings import load_settings
+    from src.ingestion.task_queue import IngestionTaskQueue
+
+    return IngestionTaskQueue(settings=load_settings())
+
+
+def _safe_upload_name(name: str) -> str:
+    path = Path(name)
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.stem).strip("._")
+    suffix = path.suffix.lower()
+    return f"{stem or 'upload'}{suffix}"
+
+
+def _save_uploaded_file(
+    uploaded_file: "st.runtime.uploaded_file_manager.UploadedFile",
+) -> Path:
+    queue = _get_ingestion_queue()
+    upload_dir = queue.upload_dir
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_upload_name(uploaded_file.name)
+    target = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+    with target.open("wb") as handle:
+        handle.write(uploaded_file.getbuffer())
+    return target
 
 
 def _run_ingestion(
@@ -100,21 +130,57 @@ def render() -> None:
     # ── Upload section ─────────────────────────────────────────────
     st.subheader("📤 Upload & Ingest")
 
+    queue = _get_ingestion_queue()
+
     col1, col2 = st.columns([3, 1])
     with col1:
-        uploaded = st.file_uploader(
-            "Select a file to ingest",
+        uploaded_files = st.file_uploader(
+            "Select files to ingest",
             type=["pdf", "txt", "md", "docx"],
             key="ingest_uploader",
+            accept_multiple_files=True,
         )
     with col2:
         collection = st.text_input("Collection", value="default", key="ingest_collection")
+        force = st.checkbox("Force reprocess", value=False, key="ingest_force")
 
-    if uploaded is not None:
-        if st.button("🚀 Start Ingestion", key="btn_ingest"):
-            progress_bar = st.progress(0, text="Preparing…")
-            status_text = st.empty()
-            _run_ingestion(uploaded, collection.strip() or "default", progress_bar, status_text)
+    if uploaded_files:
+        if st.button("Submit Ingestion Jobs", key="btn_ingest_async"):
+            target_collection = collection.strip() or "default"
+            for uploaded in uploaded_files:
+                stored_path = _save_uploaded_file(uploaded)
+                job_id = queue.submit_file(
+                    stored_path,
+                    collection=target_collection,
+                    force=force,
+                    original_name=uploaded.name,
+                )
+                st.success(f"Submitted **{uploaded.name}** as job `{job_id}`.")
+
+    st.subheader("Ingestion Jobs")
+    if st.button("Refresh Jobs", key="btn_refresh_jobs"):
+        st.rerun()
+    jobs = queue.list_jobs(limit=20)
+    if jobs:
+        rows = [
+            {
+                "job_id": job["job_id"][:12],
+                "status": job["status"],
+                "file": job.get("original_name") or Path(job["file_path"]).name,
+                "collection": job["collection"],
+                "stage": job.get("progress_stage") or "",
+                "progress": (
+                    f"{job.get('progress_current', 0)}/{job.get('progress_total', 0)}"
+                    if job.get("progress_total")
+                    else ""
+                ),
+                "error": (job.get("error") or "")[:120],
+            }
+            for job in jobs
+        ]
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+    else:
+        st.info("No ingestion jobs yet.")
 
     st.divider()
 
@@ -131,7 +197,7 @@ def render() -> None:
     if not docs:
         st.info(
             "**No documents ingested yet.** "
-            "Upload a PDF, TXT, MD, or DOCX file above and click \"Start Ingestion\" to begin."
+            "Upload a PDF, TXT, MD, or DOCX file above and click \"Submit Ingestion Jobs\" to begin."
         )
         return
 

@@ -154,6 +154,12 @@ ingestion:
   chunk_overlap: 200
   splitter: "recursive"  # Options: recursive, semantic, fixed_length
   batch_size: 20
+  concurrent_upload:
+    enabled: true
+    max_workers: 4
+    job_db_path: "./data/db/ingestion_jobs.db"
+    upload_dir: "./data/uploads/ingestion"
+    storage_lock_scope: "collection"  # Options: collection, global
   chunking:
     strategy: "recursive"
     chunk_size: 1000

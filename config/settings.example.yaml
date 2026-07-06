@@ -103,6 +103,12 @@ ingestion:
   chunk_overlap: 200
   splitter: "recursive"
   batch_size: 20
+  concurrent_upload:
+    enabled: true
+    max_workers: 4
+    job_db_path: "./data/db/ingestion_jobs.db"
+    upload_dir: "./data/uploads/ingestion"
+    storage_lock_scope: "collection"
   supported_extensions:
     - ".pdf"
     - ".md"

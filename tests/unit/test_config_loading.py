@@ -73,6 +73,7 @@ def test_load_settings_success(tmp_path: Path) -> None:
     assert settings.evaluation.metrics == ["hit_rate", "mrr"]
     assert settings.observability.log_level == "INFO"
     assert settings.ingestion is not None
+    assert settings.ingestion.concurrent_upload == {}
     assert settings.ingestion.supported_extensions == [
         ".pdf",
         ".md",
