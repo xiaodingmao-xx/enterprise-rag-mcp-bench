@@ -67,6 +67,8 @@ def test_load_settings_success(tmp_path: Path) -> None:
     assert settings.embedding.max_batch_size == 10
     assert settings.vector_store.collection_name == "knowledge_hub"
     assert settings.retrieval.rrf_k == 60
+    assert settings.retrieval.sparse_backend == "json_bm25"
+    assert settings.retrieval.fts5.db_path == "./data/db/sparse_fts5.db"
     assert settings.rerank.provider == "none"
     assert settings.evaluation.metrics == ["hit_rate", "mrr"]
     assert settings.observability.log_level == "INFO"
@@ -139,6 +141,62 @@ def test_ingestion_supported_extensions_are_normalised(tmp_path: Path) -> None:
 
     assert settings.ingestion is not None
     assert settings.ingestion.supported_extensions == [".md", ".txt"]
+
+
+def test_load_settings_with_fts5_sparse_backend(tmp_path: Path) -> None:
+    config = """
+    llm:
+      provider: openai
+      model: gpt-4o-mini
+      temperature: 0.0
+      max_tokens: 1024
+    embedding:
+      provider: openai
+      model: text-embedding-3-small
+      dimensions: 1536
+    vector_store:
+      provider: chroma
+      persist_directory: ./data/db/chroma
+      collection_name: knowledge_hub
+    retrieval:
+      dense_top_k: 20
+      sparse_top_k: 20
+      fusion_top_k: 10
+      rrf_k: 60
+      sparse_backend: sqlite_fts5
+      fts5:
+        db_path: ./tmp/sparse.db
+        tokenizer: trigram
+        match_mode: and
+        busy_timeout_ms: 1234
+        max_retries: 5
+    rerank:
+      enabled: false
+      provider: none
+      model: cross-encoder/ms-marco-MiniLM-L-6-v2
+      top_k: 5
+    evaluation:
+      enabled: false
+      provider: custom
+      metrics:
+        - hit_rate
+    observability:
+      log_level: INFO
+      trace_enabled: true
+      trace_file: ./logs/traces.jsonl
+      structured_logging: true
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    settings = load_settings(settings_path)
+
+    assert settings.retrieval.sparse_backend == "sqlite_fts5"
+    assert settings.retrieval.fts5.db_path == "./tmp/sparse.db"
+    assert settings.retrieval.fts5.tokenizer == "trigram"
+    assert settings.retrieval.fts5.match_mode == "and"
+    assert settings.retrieval.fts5.busy_timeout_ms == 1234
+    assert settings.retrieval.fts5.max_retries == 5
 
 
 def test_missing_required_field_raises_error(tmp_path: Path) -> None:

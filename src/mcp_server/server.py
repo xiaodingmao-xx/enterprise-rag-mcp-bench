@@ -73,6 +73,8 @@ def _preload_heavy_imports() -> None:
         import src.core.query_engine.sparse_retriever  # noqa: F401
         import src.core.query_engine.reranker  # noqa: F401
         import src.ingestion.storage.bm25_indexer  # noqa: F401
+        import src.ingestion.storage.sqlite_fts5_indexer  # noqa: F401
+        import src.ingestion.storage.sparse_indexer_factory  # noqa: F401
         import src.libs.embedding.embedding_factory  # noqa: F401
         import src.libs.vector_store.vector_store_factory  # noqa: F401
     except ImportError:

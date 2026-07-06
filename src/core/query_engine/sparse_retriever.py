@@ -14,7 +14,6 @@ from src.core.types import RetrievalResult
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
-    from src.ingestion.storage.bm25_indexer import BM25Indexer
     from src.libs.vector_store.base_vector_store import BaseVectorStore
 
 logger = logging.getLogger(__name__)
@@ -61,7 +60,7 @@ class SparseRetriever:
     def __init__(
         self,
         settings: Optional[Settings] = None,
-        bm25_indexer: Optional[BM25Indexer] = None,
+        bm25_indexer: Optional[Any] = None,
         vector_store: Optional[BaseVectorStore] = None,
         default_top_k: int = 10,
         default_collection: str = "default",
@@ -152,11 +151,14 @@ class SparseRetriever:
         
         # Step 2: Query BM25 index
         try:
-            bm25_results = self.bm25_indexer.query(
-                query_terms=keywords,
-                top_k=effective_top_k,
-                trace=trace,
-            )
+            query_kwargs: Dict[str, Any] = {
+                "query_terms": keywords,
+                "top_k": effective_top_k,
+                "trace": trace,
+            }
+            if getattr(self.bm25_indexer, "supports_collection_query", False):
+                query_kwargs["collection"] = effective_collection
+            bm25_results = self.bm25_indexer.query(**query_kwargs)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to query BM25 index: {e}. "
@@ -291,7 +293,7 @@ class SparseRetriever:
 
 def create_sparse_retriever(
     settings: Settings,
-    bm25_indexer: Optional[BM25Indexer] = None,
+    bm25_indexer: Optional[Any] = None,
     vector_store: Optional[BaseVectorStore] = None,
     index_dir: str = "data/db/bm25",
 ) -> SparseRetriever:
@@ -317,8 +319,12 @@ def create_sparse_retriever(
     """
     # Lazy import to avoid circular dependencies
     if bm25_indexer is None:
-        from src.ingestion.storage.bm25_indexer import BM25Indexer
-        bm25_indexer = BM25Indexer(index_dir=index_dir)
+        from src.ingestion.storage.sparse_indexer_factory import create_sparse_indexer
+        bm25_indexer = create_sparse_indexer(
+            settings,
+            collection="default",
+            index_dir=index_dir,
+        )
     
     if vector_store is None:
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory

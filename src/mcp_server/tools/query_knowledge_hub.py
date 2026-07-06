@@ -259,7 +259,6 @@ class QueryKnowledgeHubTool:
         from src.core.query_engine.dense_retriever import create_dense_retriever
         from src.core.query_engine.sparse_retriever import create_sparse_retriever
         from src.core.query_engine.reranker import create_core_reranker
-        from src.ingestion.storage.bm25_indexer import BM25Indexer
         from src.libs.embedding.embedding_factory import EmbeddingFactory
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory
         
@@ -288,11 +287,10 @@ class QueryKnowledgeHubTool:
         # BM25Indexer just holds the index dir path; the SparseRetriever
         # calls _ensure_index_loaded() on every search, which always
         # reloads from disk — so it picks up dashboard-written data.
-        bm25_indexer = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
         sparse_retriever = create_sparse_retriever(
             settings=self.settings,
-            bm25_indexer=bm25_indexer,
             vector_store=vector_store,
+            index_dir=str(resolve_path(f"data/db/bm25/{collection}")),
         )
         sparse_retriever.default_collection = collection
         

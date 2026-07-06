@@ -37,7 +37,6 @@ from src.core.query_engine.query_processor import QueryProcessor
 from src.core.query_engine.reranker import create_core_reranker
 from src.core.query_engine.sparse_retriever import create_sparse_retriever
 from src.core.settings import load_settings
-from src.ingestion.storage.bm25_indexer import BM25Indexer
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 from src.observability.evaluation.eval_runner import GoldenTestCase, load_test_set
@@ -139,11 +138,10 @@ def _build_components(settings: Any, collection: str) -> dict[str, Any]:
         vector_store=vector_store,
     )
 
-    bm25_indexer = BM25Indexer(index_dir=str(PROJECT_ROOT / "data" / "db" / "bm25" / collection))
     sparse_retriever = create_sparse_retriever(
         settings=settings,
-        bm25_indexer=bm25_indexer,
         vector_store=vector_store,
+        index_dir=str(PROJECT_ROOT / "data" / "db" / "bm25" / collection),
     )
     sparse_retriever.default_collection = collection
 

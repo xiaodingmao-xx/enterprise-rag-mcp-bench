@@ -50,8 +50,8 @@ class DataService:
 
         from src.core.settings import load_settings, resolve_path
         from src.ingestion.document_manager import DocumentManager
-        from src.ingestion.storage.bm25_indexer import BM25Indexer
         from src.ingestion.storage.image_storage import ImageStorage
+        from src.ingestion.storage.sparse_indexer_factory import create_sparse_indexer
         from src.libs.loader.file_integrity import SQLiteIntegrityChecker
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
@@ -60,7 +60,7 @@ class DataService:
         chroma = VectorStoreFactory.create(
             settings, collection_name=target_collection
         )
-        bm25 = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{target_collection}")))
+        bm25 = create_sparse_indexer(settings, collection=target_collection)
         images = ImageStorage(
             db_path=str(resolve_path("data/db/image_index.db")),
             images_root=str(resolve_path("data/images")),

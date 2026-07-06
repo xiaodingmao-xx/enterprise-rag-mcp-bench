@@ -207,11 +207,22 @@ class VectorStoreSettings:
 
 
 @dataclass(frozen=True)
+class FTS5Settings:
+    db_path: str = "./data/db/sparse_fts5.db"
+    tokenizer: str = "unicode61"
+    match_mode: str = "or"
+    busy_timeout_ms: int = 10000
+    max_retries: int = 3
+
+
+@dataclass(frozen=True)
 class RetrievalSettings:
     dense_top_k: int
     sparse_top_k: int
     fusion_top_k: int
     rrf_k: int
+    sparse_backend: str = "json_bm25"
+    fts5: FTS5Settings = field(default_factory=FTS5Settings)
 
 
 @dataclass(frozen=True)
@@ -530,6 +541,37 @@ class Settings:
                 sparse_top_k=_require_int(retrieval, "sparse_top_k", "retrieval"),
                 fusion_top_k=_require_int(retrieval, "fusion_top_k", "retrieval"),
                 rrf_k=_require_int(retrieval, "rrf_k", "retrieval"),
+                sparse_backend=str(retrieval.get("sparse_backend", "json_bm25")),
+                fts5=FTS5Settings(
+                    db_path=str(
+                        _optional_mapping(retrieval.get("fts5")).get(
+                            "db_path",
+                            "./data/db/sparse_fts5.db",
+                        )
+                    ),
+                    tokenizer=str(
+                        _optional_mapping(retrieval.get("fts5")).get(
+                            "tokenizer",
+                            "unicode61",
+                        )
+                    ),
+                    match_mode=str(
+                        _optional_mapping(retrieval.get("fts5")).get(
+                            "match_mode",
+                            "or",
+                        )
+                    ),
+                    busy_timeout_ms=_int_or_default(
+                        _optional_mapping(retrieval.get("fts5")).get("busy_timeout_ms"),
+                        10000,
+                        1,
+                    ),
+                    max_retries=_int_or_default(
+                        _optional_mapping(retrieval.get("fts5")).get("max_retries"),
+                        3,
+                        0,
+                    ),
+                ),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),

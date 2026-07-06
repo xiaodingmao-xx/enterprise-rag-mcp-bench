@@ -78,6 +78,13 @@ retrieval:
   sparse_top_k: 20
   fusion_top_k: 10
   rrf_k: 60  # RRF constant
+  sparse_backend: "sqlite_fts5"  # Options: json_bm25, sqlite_fts5
+  fts5:
+    db_path: "./data/db/sparse_fts5.db"
+    tokenizer: "unicode61"  # Options: unicode61, trigram
+    match_mode: "or"  # Options: or, and
+    busy_timeout_ms: 10000
+    max_retries: 3
 
 # =============================================================================
 # Rerank Configuration

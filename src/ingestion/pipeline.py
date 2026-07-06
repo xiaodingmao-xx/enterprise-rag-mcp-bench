@@ -46,7 +46,10 @@ from src.ingestion.embedding.dense_encoder import DenseEncoder
 from src.ingestion.embedding.sparse_encoder import SparseEncoder
 from src.ingestion.embedding.batch_processor import BatchProcessor, BatchResult
 from src.ingestion.embedding.embedding_cache import SQLiteEmbeddingCache
-from src.ingestion.storage.bm25_indexer import BM25Indexer
+from src.ingestion.storage.sparse_indexer_factory import (
+    create_sparse_indexer,
+    get_sparse_backend,
+)
 from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.ingestion.storage.image_storage import ImageStorage
 
@@ -247,8 +250,9 @@ class IngestionPipeline:
         self.vector_upserter = VectorUpserter(settings, collection_name=collection)
         logger.info(f"  ✓ VectorUpserter initialized (provider={settings.vector_store.provider}, collection={collection})")
         
-        self.bm25_indexer = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
-        logger.info("  ✓ BM25Indexer initialized")
+        self.sparse_indexer = create_sparse_indexer(settings, collection=collection)
+        self.bm25_indexer = self.sparse_indexer
+        logger.info(f"  SparseIndexer initialized (backend={get_sparse_backend(settings)})")
         
         self.image_storage = ImageStorage(
             db_path=str(resolve_path("data/db/image_index.db")),
@@ -673,6 +677,8 @@ class IngestionPipeline:
             
             dense_vectors = batch_result.dense_vectors
             sparse_stats = batch_result.sparse_stats
+            cache_hits = getattr(batch_result, "cache_hits", 0)
+            cache_misses = getattr(batch_result, "cache_misses", 0)
             
             logger.info(f"  Dense vectors: {len(dense_vectors)} (dim={len(dense_vectors[0]) if dense_vectors else 0})")
             logger.info(f"  Sparse stats: {len(sparse_stats)} documents")
@@ -681,8 +687,8 @@ class IngestionPipeline:
                 "dense_vector_count": len(dense_vectors),
                 "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
                 "sparse_doc_count": len(sparse_stats),
-                "cache_hits": batch_result.cache_hits,
-                "cache_misses": batch_result.cache_misses,
+                "cache_hits": cache_hits,
+                "cache_misses": cache_misses,
             }
             if trace is not None:
                 # Build per-chunk encoding details (both dense & sparse)
@@ -711,8 +717,8 @@ class IngestionPipeline:
                     "dense_vector_count": len(dense_vectors),
                     "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
                     "sparse_doc_count": len(sparse_stats),
-                    "cache_hits": batch_result.cache_hits,
-                    "cache_misses": batch_result.cache_misses,
+                    "cache_hits": cache_hits,
+                    "cache_misses": cache_misses,
                     "chunks": chunk_details,
                 }, elapsed_ms=_elapsed)
             
@@ -725,6 +731,7 @@ class IngestionPipeline:
             # 7a: Vector Upsert
             logger.info("  7a. Vector Storage (ChromaDB)...")
             _t0_storage = time.monotonic()
+            _t0_chroma = time.monotonic()
             delete_existing = getattr(self, "_delete_existing_vectors_for_source", None)
             if callable(delete_existing):
                 deleted_vector_count = delete_existing(str(file_path), trace=trace)
@@ -732,26 +739,68 @@ class IngestionPipeline:
                 deleted_vector_count = 0
             vector_ids = self.vector_upserter.upsert(chunks, dense_vectors, trace)
             logger.info(f"      Stored {len(vector_ids)} vectors")
+            _elapsed_chroma = (time.monotonic() - _t0_chroma) * 1000.0
+            if trace is not None:
+                trace.record_stage("chroma_upsert", {
+                    "method": "chroma_upsert",
+                    "backend": "ChromaDB",
+                    "collection": self.collection,
+                    "count": len(vector_ids),
+                    "deleted_stale_vectors": deleted_vector_count,
+                    "path": "data/db/chroma/",
+                }, elapsed_ms=_elapsed_chroma)
 
             # Align BM25 chunk_ids with Chroma vector IDs so the SparseRetriever
             # can look up BM25 hits in the vector store after retrieval.
             for stat, vid in zip(sparse_stats, vector_ids):
                 stat["chunk_id"] = vid
 
-            # 7b: BM25 Index
-            logger.info("  7b. BM25 Index...")
-            source_hash = hashlib.sha256(str(file_path).encode("utf-8")).hexdigest()[:8]
-            self.bm25_indexer.add_documents(
-                sparse_stats,
-                collection=self.collection,
-                doc_id=source_hash,
-                trace=trace,
+            # 7b: Sparse Index
+            sparse_backend = get_sparse_backend(getattr(self, "settings", None))
+            logger.info(f"  7b. Sparse Index ({sparse_backend})...")
+            _t0_sparse = time.monotonic()
+            sparse_indexer = getattr(
+                self,
+                "sparse_indexer",
+                getattr(self, "bm25_indexer", None),
             )
+            if getattr(sparse_indexer, "requires_chunk_text", False):
+                sparse_indexer.add_documents(
+                    sparse_stats,
+                    chunks=chunks,
+                    chunk_ids=vector_ids,
+                    collection=self.collection,
+                    doc_id=file_hash,
+                    source_path=str(file_path),
+                    trace=trace,
+                )
+            else:
+                source_hash = hashlib.sha256(str(file_path).encode("utf-8")).hexdigest()[:8]
+                sparse_indexer.add_documents(
+                    sparse_stats,
+                    collection=self.collection,
+                    doc_id=source_hash,
+                    trace=trace,
+                )
+            _elapsed_sparse = (time.monotonic() - _t0_sparse) * 1000.0
+            if trace is not None:
+                trace.record_stage("sparse_index", {
+                    "method": "sparse_index",
+                    "backend": sparse_backend,
+                    "collection": self.collection,
+                    "count": len(sparse_stats),
+                    "path": (
+                        "data/db/sparse_fts5.db"
+                        if sparse_backend in {"sqlite_fts5", "fts5"}
+                        else f"data/db/bm25/{self.collection}/"
+                    ),
+                }, elapsed_ms=_elapsed_sparse)
             logger.info(f"      Index built for {len(sparse_stats)} documents")
             
             # 7c: Register images in image storage index
             # Note: Images are already saved by PdfLoader, we just need to index them
             logger.info("  7c. Image Storage Index...")
+            _t0_image = time.monotonic()
             images = document.metadata.get("images", [])
             for img in images:
                 img_path = Path(img["path"])
@@ -764,6 +813,13 @@ class IngestionPipeline:
                         page_num=img.get("page", 0)
                     )
             logger.info(f"      Indexed {len(images)} images")
+            _elapsed_image = (time.monotonic() - _t0_image) * 1000.0
+            if trace is not None:
+                trace.record_stage("image_index", {
+                    "method": "image_index",
+                    "backend": "ImageStorage (JSON index)",
+                    "count": len(images),
+                }, elapsed_ms=_elapsed_image)
             
             stages["storage"] = {
                 "vector_count": len(vector_ids),
@@ -803,10 +859,14 @@ class IngestionPipeline:
                         "path": "data/db/chroma/",
                     },
                     "sparse_store": {
-                        "backend": "BM25",
+                        "backend": sparse_backend,
                         "collection": self.collection,
                         "count": len(sparse_stats),
-                        "path": f"data/db/bm25/{self.collection}/",
+                        "path": (
+                            "data/db/sparse_fts5.db"
+                            if sparse_backend in {"sqlite_fts5", "fts5"}
+                            else f"data/db/bm25/{self.collection}/"
+                        ),
                     },
                     "image_store": {
                         "backend": "ImageStorage (JSON index)",
