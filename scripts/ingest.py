@@ -101,6 +101,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List files that would be processed without actually processing"
     )
+
+    parser.add_argument(
+        "--concurrent",
+        action="store_true",
+        help="Process multiple files concurrently using the ingestion task queue"
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Worker count for --concurrent. Defaults to ingestion.concurrent_upload.max_workers"
+    )
     
     return parser.parse_args()
 
@@ -194,6 +207,77 @@ def print_summary(results: List[PipelineResult], verbose: bool = False) -> None:
     print("=" * 60)
 
 
+def _pipeline_result_from_job(job: dict) -> PipelineResult:
+    result = job.get("result") or {}
+    status = job.get("status")
+    success = bool(result.get("success", status in {"succeeded", "skipped"}))
+    return PipelineResult(
+        success=success,
+        file_path=str(result.get("file_path") or job.get("file_path") or ""),
+        doc_id=result.get("doc_id"),
+        chunk_count=int(result.get("chunk_count") or 0),
+        image_count=int(result.get("image_count") or 0),
+        error=job.get("error") or result.get("error"),
+        stages=result.get("stages") or {},
+    )
+
+
+def process_files_concurrently(
+    files: List[Path],
+    settings: Settings,
+    collection: str,
+    force: bool,
+    workers: Optional[int],
+) -> List[PipelineResult]:
+    """Process files concurrently through the background ingestion queue."""
+    from src.ingestion.task_queue import IngestionTaskQueue
+
+    queue = IngestionTaskQueue(settings=settings, max_workers=workers)
+    print(f"\n[INFO] Processing files concurrently...")
+    print(f"   Workers: {queue.max_workers}")
+    print("   Storage writes are still serialized by the configured storage lock.")
+
+    job_ids: List[str] = []
+    try:
+        for i, file_path in enumerate(files, 1):
+            job_id = queue.submit_file(
+                file_path,
+                collection=collection,
+                force=force,
+                original_name=str(file_path),
+            )
+            job_ids.append(job_id)
+            print(f"   [{i}/{len(files)}] Queued: {file_path} -> {job_id[:12]}")
+
+        results: List[PipelineResult] = []
+        for i, job_id in enumerate(job_ids, 1):
+            queue.wait(job_id)
+            job = queue.get_job(job_id)
+            if job is None:
+                result = PipelineResult(
+                    success=False,
+                    file_path="",
+                    error=f"Job not found after completion: {job_id}",
+                )
+            else:
+                result = _pipeline_result_from_job(job)
+            results.append(result)
+
+            if result.success:
+                skipped = result.stages.get("integrity", {}).get("skipped", False)
+                status = "[SKIP] Skipped" if skipped else "[OK] Success"
+                print(
+                    f"   [{i}/{len(job_ids)}] {status}: "
+                    f"{result.file_path} ({result.chunk_count} chunks)"
+                )
+            else:
+                print(f"   [{i}/{len(job_ids)}] [FAIL] {result.file_path}: {result.error}")
+
+        return results
+    finally:
+        queue.shutdown()
+
+
 def main() -> int:
     """Main entry point for the ingestion script.
     
@@ -253,6 +337,27 @@ def main() -> int:
     print(f"\n[INFO] Initializing pipeline...")
     print(f"   Collection: {args.collection}")
     print(f"   Force: {args.force}")
+    print(f"   Concurrent: {args.concurrent}")
+
+    if args.workers is not None and args.workers <= 0:
+        print("[FAIL] --workers must be greater than 0")
+        return 2
+
+    if args.concurrent:
+        results = process_files_concurrently(
+            files=files,
+            settings=settings,
+            collection=args.collection,
+            force=args.force,
+            workers=args.workers,
+        )
+        print_summary(results, args.verbose)
+        successful = sum(1 for r in results if r.success)
+        if successful == len(results):
+            return 0
+        if successful > 0:
+            return 1
+        return 2
     
     try:
         pipeline = IngestionPipeline(

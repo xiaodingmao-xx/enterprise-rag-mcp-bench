@@ -220,7 +220,7 @@ ingestion:
   
   # Chunk Refiner Configuration (C5)
   chunk_refiner:
-    use_llm: true  # Set to true to enable LLM-based refinement (requires LLM config)
+    use_llm: false  # Set to true to enable LLM-based refinement (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based refinement
   
   # Structured Metadata Enrichment Configuration (C6)
