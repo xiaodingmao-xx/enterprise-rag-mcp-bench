@@ -90,13 +90,13 @@ retrieval:
 # Rerank Configuration
 # =============================================================================
 rerank:
-  enabled: false
-  provider: "none"  # Options: none, cross_encoder, llm
-  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-  top_k: 5
-  candidate_top_k: 20
-  output_top_k: 5
-  timeout_seconds: 10
+  enabled: true
+  provider: "cross_encoder"  # Options: none, cross_encoder, llm
+  model: "BAAI/bge-reranker-v2-m3"
+  top_k: 10
+  candidate_top_k: 50
+  output_top_k: 10
+  timeout_seconds: 30
   fallback_on_timeout: true
 
 # =============================================================================

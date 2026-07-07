@@ -151,6 +151,34 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Skip questions without expected_doc_ids. Enabled by default.",
     )
+    parser.add_argument(
+        "--enable-generation",
+        action="store_true",
+        help=(
+            "Generate grounded answers from retrieved contexts. This is also "
+            "enabled automatically when --enable-ragas is used."
+        ),
+    )
+    parser.add_argument(
+        "--enable-ragas",
+        action="store_true",
+        help="Evaluate generated answers with Ragas metrics such as faithfulness.",
+    )
+    parser.add_argument(
+        "--ragas-metrics",
+        nargs="+",
+        default=["faithfulness"],
+        help=(
+            "Ragas metrics to compute when --enable-ragas is set. "
+            "Defaults to faithfulness."
+        ),
+    )
+    parser.add_argument(
+        "--max-context-chars",
+        type=int,
+        default=8000,
+        help="Maximum total retrieved context characters used for answer generation.",
+    )
     return parser.parse_args()
 
 
@@ -468,28 +496,122 @@ def _aggregate_query_metrics(
     query_results: Sequence[dict[str, Any]],
     top_k: int,
 ) -> dict[str, float]:
-    metric_keys = [
-        f"recall@{top_k}",
-        f"precision@{top_k}",
-        f"mrr@{top_k}",
-        f"ndcg@{top_k}",
-        f"hit@{top_k}",
-        "latency_ms",
-    ]
-    values_by_key: dict[str, list[float]] = {key: [] for key in metric_keys}
+    excluded_keys = {"gold_doc_count", "retrieved_doc_count"}
+    values_by_key: dict[str, list[float]] = {}
 
     for item in query_results:
         if item.get("skipped"):
             continue
         metrics = item.get("metrics", {})
-        for key in metric_keys:
-            if key in metrics:
-                values_by_key[key].append(float(metrics[key]))
+        for key, value in metrics.items():
+            if key in excluded_keys or value is None:
+                continue
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                continue
+            values_by_key.setdefault(key, []).append(parsed)
 
     return {
         key: round(sum(values) / len(values), 4) if values else 0.0
-        for key, values in values_by_key.items()
+        for key, values in sorted(values_by_key.items())
     }
+
+
+def _result_texts(results: Sequence[Any], max_chars: int) -> list[str]:
+    """Extract non-empty context texts with a total character budget."""
+
+    remaining = max(0, int(max_chars))
+    texts: list[str] = []
+    if remaining <= 0:
+        return texts
+
+    for result in results:
+        if isinstance(result, dict):
+            text = result.get("text", "")
+        else:
+            text = getattr(result, "text", "")
+        cleaned = " ".join(str(text or "").split())
+        if not cleaned:
+            continue
+
+        if len(cleaned) > remaining:
+            cleaned = cleaned[:remaining]
+        texts.append(cleaned)
+        remaining -= len(cleaned)
+        if remaining <= 0:
+            break
+
+    return texts
+
+
+def _create_answer_generator(settings: Any, enabled: bool) -> Any | None:
+    if not enabled:
+        return None
+
+    try:
+        import src.libs.llm  # noqa: F401
+        from src.libs.llm.llm_factory import LLMFactory
+
+        return LLMFactory.create(settings)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize answer generation LLM: {exc}") from exc
+
+
+def _generate_grounded_answer(
+    *,
+    query: str,
+    contexts: Sequence[str],
+    answer_generator: Any,
+) -> str:
+    if answer_generator is None:
+        raise RuntimeError("answer generator is not configured")
+    if not contexts:
+        return "The retrieved contexts do not provide enough information."
+
+    from src.libs.llm.base_llm import Message
+
+    context_block = "\n\n".join(
+        f"[{index}] {context}" for index, context in enumerate(contexts, start=1)
+    )
+    messages = [
+        Message(
+            role="system",
+            content=(
+                "You are a strict grounded RAG answer generator. Answer only "
+                "from the provided contexts. If the contexts are insufficient, "
+                "say that the retrieved contexts do not provide enough "
+                "information. Answer in the same language as the question."
+            ),
+        ),
+        Message(
+            role="user",
+            content=(
+                f"Question:\n{query}\n\n"
+                f"Retrieved contexts:\n{context_block}\n\n"
+                "Grounded answer:"
+            ),
+        ),
+    ]
+    response = answer_generator.chat(messages, temperature=0.0)
+    return str(getattr(response, "content", response)).strip()
+
+
+def _create_ragas_evaluator(
+    *,
+    settings: Any,
+    enabled: bool,
+    metrics: Sequence[str],
+) -> Any | None:
+    if not enabled:
+        return None
+
+    try:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        return RagasEvaluator(settings=settings, metrics=metrics)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to initialize Ragas evaluator: {exc}") from exc
 
 
 def _evaluate_mode(
@@ -499,9 +621,15 @@ def _evaluate_mode(
     top_k: int,
     candidate_k: int,
     components: dict[str, Any],
+    enable_generation: bool = False,
+    enable_ragas: bool = False,
+    answer_generator: Any | None = None,
+    ragas_evaluator: Any | None = None,
+    max_context_chars: int = 8000,
 ) -> dict[str, Any]:
     mode_t0 = time.monotonic()
     query_results: list[dict[str, Any]] = []
+    _, _, run_retrieval, serialise_result = _ablation_helpers()
 
     for index, test_case in enumerate(test_cases, start=1):
         query_t0 = time.monotonic()
@@ -509,7 +637,6 @@ def _evaluate_mode(
         error: str | None = None
 
         try:
-            _, _, run_retrieval, serialise_result = _ablation_helpers()
             retrieved_results = run_retrieval(
                 mode=mode,
                 query=test_case.query,
@@ -539,6 +666,59 @@ def _evaluate_mode(
                 latency_ms,
             )
 
+        contexts = _result_texts(retrieved_results, max_context_chars)
+        generated_answer: str | None = None
+        generation_error: str | None = None
+        generation_latency_ms: float | None = None
+        ragas_scores: dict[str, float] = {}
+        ragas_error: str | None = None
+        ragas_latency_ms: float | None = None
+
+        if enable_generation or enable_ragas:
+            generation_t0 = time.monotonic()
+            try:
+                generated_answer = _generate_grounded_answer(
+                    query=test_case.query,
+                    contexts=contexts,
+                    answer_generator=answer_generator,
+                )
+            except Exception as exc:
+                generation_error = str(exc)
+            generation_latency_ms = (time.monotonic() - generation_t0) * 1000.0
+            metrics["generation_latency_ms"] = round(generation_latency_ms, 1)
+
+        if enable_ragas:
+            ragas_t0 = time.monotonic()
+            if ragas_evaluator is None:
+                ragas_error = "ragas evaluator is not configured"
+            elif not generated_answer:
+                ragas_error = generation_error or "missing generated answer"
+            elif not contexts:
+                ragas_error = "missing retrieved contexts"
+            else:
+                try:
+                    ragas_scores = ragas_evaluator.evaluate(
+                        query=test_case.query,
+                        retrieved_chunks=[{"text": context} for context in contexts],
+                        generated_answer=generated_answer,
+                    )
+                    metrics.update(
+                        {
+                            key: round(float(value), 4)
+                            for key, value in ragas_scores.items()
+                        }
+                    )
+                except Exception as exc:
+                    ragas_error = str(exc)
+            ragas_latency_ms = (time.monotonic() - ragas_t0) * 1000.0
+            metrics["ragas_latency_ms"] = round(ragas_latency_ms, 1)
+
+        if enable_generation or enable_ragas:
+            metrics["end_to_end_latency_ms"] = round(
+                (time.monotonic() - query_t0) * 1000.0,
+                1,
+            )
+
         query_results.append(
             {
                 "index": index,
@@ -548,6 +728,10 @@ def _evaluate_mode(
                 "query": test_case.query,
                 "expected_doc_ids": test_case.expected_doc_ids,
                 "retrieved_doc_ids": retrieved_doc_ids,
+                "generated_answer": generated_answer,
+                "generation_error": generation_error,
+                "ragas": ragas_scores,
+                "ragas_error": ragas_error,
                 "metrics": metrics,
                 "skipped": skipped,
                 "error": error,
@@ -604,6 +788,16 @@ def _format_metric(value: Any, digits: int = 4) -> str:
 def format_markdown_table(report: dict[str, Any], top_k: int) -> str:
     """Format aggregate EnterpriseRAG-Bench retrieval metrics as Markdown."""
 
+    ragas_metrics = [
+        str(metric)
+        for metric in report.get("ragas_metrics", [])
+        if str(metric).strip()
+    ]
+    include_generation = bool(report.get("enable_generation")) or bool(
+        report.get("enable_ragas")
+    )
+    include_ragas = bool(report.get("enable_ragas"))
+
     headers = [
         "Mode",
         "Evaluated",
@@ -614,6 +808,12 @@ def format_markdown_table(report: dict[str, Any], top_k: int) -> str:
         f"Hit@{top_k}",
         "Avg Latency ms",
     ]
+    if include_generation:
+        headers.append("Gen Latency ms")
+    if include_ragas:
+        headers.extend(ragas_metrics)
+        headers.append("RAGAS Latency ms")
+
     rows = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join(["---"] * len(headers)) + " |",
@@ -622,20 +822,25 @@ def format_markdown_table(report: dict[str, Any], top_k: int) -> str:
     for mode in report["modes"]:
         mode_result = report["results"][mode]
         aggregate = mode_result.get("aggregate_metrics", {})
+        row = [
+            mode,
+            str(mode_result.get("evaluated_query_count", 0)),
+            _format_metric(aggregate.get(f"recall@{top_k}")),
+            _format_metric(aggregate.get(f"precision@{top_k}")),
+            _format_metric(aggregate.get(f"mrr@{top_k}")),
+            _format_metric(aggregate.get(f"ndcg@{top_k}")),
+            _format_metric(aggregate.get(f"hit@{top_k}")),
+            _format_metric(aggregate.get("latency_ms"), digits=1),
+        ]
+        if include_generation:
+            row.append(_format_metric(aggregate.get("generation_latency_ms"), digits=1))
+        if include_ragas:
+            row.extend(_format_metric(aggregate.get(metric)) for metric in ragas_metrics)
+            row.append(_format_metric(aggregate.get("ragas_latency_ms"), digits=1))
+
         rows.append(
             "| "
-            + " | ".join(
-                [
-                    mode,
-                    str(mode_result.get("evaluated_query_count", 0)),
-                    _format_metric(aggregate.get(f"recall@{top_k}")),
-                    _format_metric(aggregate.get(f"precision@{top_k}")),
-                    _format_metric(aggregate.get(f"mrr@{top_k}")),
-                    _format_metric(aggregate.get(f"ndcg@{top_k}")),
-                    _format_metric(aggregate.get(f"hit@{top_k}")),
-                    _format_metric(aggregate.get("latency_ms"), digits=1),
-                ]
-            )
+            + " | ".join(row)
             + " |"
         )
 
@@ -651,6 +856,8 @@ def run_enterprise_rag_eval(
         raise ValueError("--candidate-k must be greater than or equal to 0")
     if args.max_questions is not None and args.max_questions <= 0:
         raise ValueError("--max-questions must be greater than 0 when provided")
+    if args.max_context_chars <= 0:
+        raise ValueError("--max-context-chars must be greater than 0")
 
     config_path = _resolve_path(args.config)
     questions_path = _resolve_questions_file(args.questions_file)
@@ -658,6 +865,12 @@ def run_enterprise_rag_eval(
     effective_candidate_k = (
         max(args.candidate_k, args.top_k) if args.candidate_k > 0 else args.top_k * 2
     )
+    enable_generation = bool(args.enable_generation or args.enable_ragas)
+    ragas_metrics = [
+        str(metric).strip().lower()
+        for metric in args.ragas_metrics
+        if str(metric).strip()
+    ] or ["faithfulness"]
 
     settings = load_settings(config_path)
     test_cases = load_enterprise_questions(
@@ -686,6 +899,13 @@ def run_enterprise_rag_eval(
             f"'{args.collection}'. Ensure documents were ingested first. Detail: {exc}"
         ) from exc
 
+    answer_generator = _create_answer_generator(settings, enable_generation)
+    ragas_evaluator = _create_ragas_evaluator(
+        settings=settings,
+        enabled=bool(args.enable_ragas),
+        metrics=ragas_metrics,
+    )
+
     warnings: list[str] = []
     collection_count = _collection_record_count(components)
     if collection_count == 0:
@@ -710,6 +930,10 @@ def run_enterprise_rag_eval(
         "candidate_k": effective_candidate_k,
         "modes": list(args.modes),
         "test_case_count": len(test_cases),
+        "enable_generation": enable_generation,
+        "enable_ragas": bool(args.enable_ragas),
+        "ragas_metrics": ragas_metrics,
+        "max_context_chars": args.max_context_chars,
         "filters": {
             "question_types": list(args.question_types or []),
             "source_types": list(args.source_types or []),
@@ -728,6 +952,11 @@ def run_enterprise_rag_eval(
             top_k=args.top_k,
             candidate_k=args.candidate_k,
             components=components,
+            enable_generation=enable_generation,
+            enable_ragas=bool(args.enable_ragas),
+            answer_generator=answer_generator,
+            ragas_evaluator=ragas_evaluator,
+            max_context_chars=args.max_context_chars,
         )
     report["total_elapsed_ms"] = round((time.monotonic() - total_t0) * 1000.0, 1)
 

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import scripts.run_enterprise_rag_eval as enterprise_eval
 from scripts.run_enterprise_rag_eval import (
+    EnterpriseRAGTestCase,
     dedupe_keep_order,
     extract_dsid,
+    format_markdown_table,
     load_enterprise_questions,
     result_to_doc_id,
+    _evaluate_mode,
+    _result_texts,
 )
 
 
@@ -131,3 +137,107 @@ def test_result_to_doc_id_falls_back_to_chunk_id() -> None:
     }
 
     assert result_to_doc_id(result) == "dsid_deadbeef"
+
+
+def test_result_texts_respects_total_character_budget() -> None:
+    results = [
+        SimpleNamespace(text="alpha beta"),
+        SimpleNamespace(text="gamma delta"),
+    ]
+
+    assert _result_texts(results, max_chars=12) == ["alpha beta", "ga"]
+
+
+def test_evaluate_mode_records_ragas_faithfulness(monkeypatch) -> None:
+    retrieved = [
+        SimpleNamespace(
+            chunk_id="dsid_abcd1234_chunk_0001",
+            score=1.0,
+            text="The rollout was approved by the platform team.",
+            metadata={"source_path": "data/dsid_abcd1234.txt"},
+        )
+    ]
+
+    def fake_run_retrieval(**kwargs):
+        return retrieved
+
+    def fake_serialise_result(result):
+        return {
+            "chunk_id": result.chunk_id,
+            "score": result.score,
+            "metadata": result.metadata,
+            "text_preview": result.text,
+        }
+
+    def fake_ablation_helpers():
+        return enterprise_eval.MODES, None, fake_run_retrieval, fake_serialise_result
+
+    class FakeAnswerGenerator:
+        def chat(self, messages, **kwargs):  # noqa: ANN001, ANN002
+            return SimpleNamespace(
+                content="The rollout was approved by the platform team."
+            )
+
+    class FakeRagasEvaluator:
+        def evaluate(self, **kwargs):  # noqa: ANN003
+            return {"faithfulness": 0.75}
+
+    monkeypatch.setattr(enterprise_eval, "_ablation_helpers", fake_ablation_helpers)
+
+    result = _evaluate_mode(
+        mode="hybrid",
+        test_cases=[
+            EnterpriseRAGTestCase(
+                question_id="q1",
+                query="Who approved the rollout?",
+                question_type="basic",
+                source_types=["github"],
+                expected_doc_ids=["dsid_abcd1234"],
+            )
+        ],
+        top_k=10,
+        candidate_k=30,
+        components={},
+        enable_generation=True,
+        enable_ragas=True,
+        answer_generator=FakeAnswerGenerator(),
+        ragas_evaluator=FakeRagasEvaluator(),
+        max_context_chars=1000,
+    )
+
+    query_result = result["query_results"][0]
+    assert query_result["generated_answer"]
+    assert query_result["ragas"] == {"faithfulness": 0.75}
+    assert query_result["metrics"]["faithfulness"] == 0.75
+    assert result["aggregate_metrics"]["faithfulness"] == 0.75
+
+
+def test_markdown_table_includes_ragas_columns() -> None:
+    report = {
+        "enable_generation": True,
+        "enable_ragas": True,
+        "ragas_metrics": ["faithfulness"],
+        "modes": ["hybrid"],
+        "results": {
+            "hybrid": {
+                "evaluated_query_count": 1,
+                "aggregate_metrics": {
+                    "recall@10": 1.0,
+                    "precision@10": 0.1,
+                    "mrr@10": 1.0,
+                    "ndcg@10": 1.0,
+                    "hit@10": 1.0,
+                    "latency_ms": 20.0,
+                    "generation_latency_ms": 30.0,
+                    "faithfulness": 0.75,
+                    "ragas_latency_ms": 40.0,
+                },
+            }
+        },
+    }
+
+    markdown = format_markdown_table(report, top_k=10)
+
+    assert "faithfulness" in markdown
+    assert "Gen Latency ms" in markdown
+    assert "RAGAS Latency ms" in markdown

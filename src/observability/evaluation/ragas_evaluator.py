@@ -14,6 +14,7 @@ Design Principles:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -26,6 +27,14 @@ ANSWER_RELEVANCY = "answer_relevancy"
 CONTEXT_PRECISION = "context_precision"
 
 SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION}
+
+OPENAI_COMPATIBLE_PROVIDERS = {
+    "openai",
+    "bailian",
+    "aliyun_bailian",
+    "dashscope",
+    "deepseek",
+}
 
 
 def _import_ragas() -> None:
@@ -210,60 +219,121 @@ class RagasEvaluator(BaseEvaluator):
 
         # ── LLM ──
         llm_cfg = self.settings.llm
-        provider = llm_cfg.provider.lower()
-        llm_azure_endpoint = getattr(llm_cfg, "azure_endpoint", None)
+        provider = str(llm_cfg.provider).lower()
+        llm_base_url = self._optional_str(getattr(llm_cfg, "base_url", None))
+        llm_azure_endpoint = self._optional_str(
+            getattr(llm_cfg, "azure_endpoint", None)
+        )
 
         # Azure-compatible mode: if azure_endpoint is configured, use Azure
         # client even when provider is "openai" (matches project convention).
         use_azure_llm = (
-            provider == "azure"
-            or (provider == "openai" and llm_azure_endpoint)
+            not llm_base_url
+            and (
+                provider == "azure"
+                or (provider == "openai" and llm_azure_endpoint)
+            )
         )
 
         if use_azure_llm:
             llm_client = AsyncAzureOpenAI(
                 api_key=llm_cfg.api_key,
-                azure_endpoint=llm_azure_endpoint or llm_cfg.azure_endpoint,
+                azure_endpoint=llm_azure_endpoint,
                 api_version=getattr(llm_cfg, "api_version", None) or "2024-02-15-preview",
             )
-        elif provider == "openai":
-            llm_client = AsyncOpenAI(api_key=llm_cfg.api_key)
+        elif provider in OPENAI_COMPATIBLE_PROVIDERS or llm_base_url:
+            llm_client = AsyncOpenAI(
+                api_key=self._resolve_api_key(
+                    provider=provider,
+                    configured=getattr(llm_cfg, "api_key", None),
+                ),
+                base_url=llm_base_url,
+            )
         else:
             raise ValueError(
                 f"Unsupported LLM provider for Ragas: '{provider}'. "
-                "Supported: azure, openai"
+                "Supported: azure or OpenAI-compatible providers with base_url."
             )
 
         llm = llm_factory(llm_cfg.model, client=llm_client, max_tokens=8192)
 
         # ── Embeddings ──
         emb_cfg = self.settings.embedding
-        emb_provider = emb_cfg.provider.lower()
-        emb_azure_endpoint = getattr(emb_cfg, "azure_endpoint", None)
+        emb_provider = str(emb_cfg.provider).lower()
+        emb_base_url = self._optional_str(getattr(emb_cfg, "base_url", None))
+        emb_azure_endpoint = self._optional_str(
+            getattr(emb_cfg, "azure_endpoint", None)
+        )
 
         # Same Azure-compatible mode detection for embeddings
         use_azure_emb = (
-            emb_provider == "azure"
-            or (emb_provider == "openai" and emb_azure_endpoint)
+            not emb_base_url
+            and (
+                emb_provider == "azure"
+                or (emb_provider == "openai" and emb_azure_endpoint)
+            )
         )
 
         if use_azure_emb:
             emb_client = AsyncAzureOpenAI(
                 api_key=emb_cfg.api_key,
-                azure_endpoint=emb_azure_endpoint or emb_cfg.azure_endpoint,
+                azure_endpoint=emb_azure_endpoint,
                 api_version=getattr(emb_cfg, "api_version", None) or "2024-02-15-preview",
             )
-        elif emb_provider == "openai":
-            emb_client = AsyncOpenAI(api_key=emb_cfg.api_key)
+        elif emb_provider in OPENAI_COMPATIBLE_PROVIDERS or emb_base_url:
+            emb_client = AsyncOpenAI(
+                api_key=self._resolve_api_key(
+                    provider=emb_provider,
+                    configured=getattr(emb_cfg, "api_key", None),
+                ),
+                base_url=emb_base_url,
+            )
         else:
             raise ValueError(
                 f"Unsupported embedding provider for Ragas: '{emb_provider}'. "
-                "Supported: azure, openai"
+                "Supported: azure or OpenAI-compatible providers with base_url."
             )
 
         embeddings = OpenAIEmbeddings(model=emb_cfg.model, client=emb_client)
 
         return llm, embeddings
+
+    @staticmethod
+    def _optional_str(value: Any) -> Optional[str]:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return None
+
+    @classmethod
+    def _resolve_api_key(cls, *, provider: str, configured: Any) -> str:
+        api_key = cls._optional_str(configured)
+        if api_key:
+            return api_key
+
+        provider_env = {
+            "openai": "OPENAI_API_KEY",
+            "bailian": "DASHSCOPE_API_KEY",
+            "aliyun_bailian": "DASHSCOPE_API_KEY",
+            "dashscope": "DASHSCOPE_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+        }
+        env_names = [
+            provider_env.get(provider.lower(), ""),
+            "OPENAI_API_KEY",
+            "DASHSCOPE_API_KEY",
+        ]
+        for env_name in env_names:
+            if not env_name:
+                continue
+            env_value = cls._optional_str(os.environ.get(env_name))
+            if env_value:
+                return env_value
+
+        raise ValueError(
+            f"Missing API key for Ragas provider '{provider}'. Configure api_key "
+            "or set the provider environment variable."
+        )
 
     def _extract_texts(self, chunks: List[Any]) -> List[str]:
         """Extract text strings from various chunk representations.
