@@ -7,6 +7,7 @@ a lightweight, open-source embedding database designed for local-first deploymen
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from src.core.settings import Settings
 
 logger = logging.getLogger(__name__)
+_CHROMA_LOCK = threading.RLock()
 
 
 class ChromaStore(BaseVectorStore):
@@ -107,35 +109,36 @@ class ChromaStore(BaseVectorStore):
             f"persist_directory='{self.persist_directory}'"
         )
         
-        # Initialize ChromaDB client with persistent storage
-        try:
-            self.client = chromadb.PersistentClient(
-                path=str(self.persist_directory),
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
+        with _CHROMA_LOCK:
+            # Initialize ChromaDB client with persistent storage
+            try:
+                self.client = chromadb.PersistentClient(
+                    path=str(self.persist_directory),
+                    settings=ChromaSettings(
+                        anonymized_telemetry=False,
+                        allow_reset=True,
+                    )
                 )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to initialize ChromaDB client at '{self.persist_directory}': {e}"
+                ) from e
+            
+            # Get or create collection
+            try:
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"}  # Use cosine similarity
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to get or create collection '{self.collection_name}': {e}"
+                ) from e
+            
+            logger.info(
+                f"ChromaStore initialized successfully. "
+                f"Collection count: {self.collection.count()}"
             )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to initialize ChromaDB client at '{self.persist_directory}': {e}"
-            ) from e
-        
-        # Get or create collection
-        try:
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"}  # Use cosine similarity
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to get or create collection '{self.collection_name}': {e}"
-            ) from e
-        
-        logger.info(
-            f"ChromaStore initialized successfully. "
-            f"Collection count: {self.collection.count()}"
-        )
     
     def upsert(
         self,
@@ -188,12 +191,13 @@ class ChromaStore(BaseVectorStore):
         
         # Perform upsert (ChromaDB's add() is idempotent with same IDs)
         try:
-            self.collection.upsert(
-                ids=ids,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                documents=documents,
-            )
+            with _CHROMA_LOCK:
+                self.collection.upsert(
+                    ids=ids,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    documents=documents,
+                )
             logger.debug(f"Successfully upserted {len(records)} records to ChromaDB")
         except Exception as e:
             raise RuntimeError(
@@ -361,10 +365,10 @@ class ChromaStore(BaseVectorStore):
             clear_cache()
 
     def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+        # Do not stop ChromaDB from object finalization. Chroma caches a shared
+        # system per persist directory; finalizing one short-lived store can
+        # stop the component while another ingestion worker is still using it.
+        pass
 
     def delete_by_metadata(
         self,
