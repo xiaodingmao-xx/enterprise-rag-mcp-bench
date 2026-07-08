@@ -131,6 +131,12 @@ def parse_args() -> argparse.Namespace:
         help="Print and save a Markdown summary table next to the JSON report.",
     )
     parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show progress bars while evaluating. Enabled by default.",
+    )
+    parser.add_argument(
         "--max-questions",
         type=int,
         default=None,
@@ -636,6 +642,42 @@ def _create_ragas_evaluator(
         raise RuntimeError(f"Failed to initialize Ragas evaluator: {exc}") from exc
 
 
+class _NullProgressBar:
+    def __enter__(self) -> "_NullProgressBar":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def update(self, value: int = 1) -> None:
+        return None
+
+    def set_postfix(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def _progress_bar(*, enabled: bool, total: int, desc: str) -> Any:
+    if not enabled:
+        return _NullProgressBar()
+
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return _NullProgressBar()
+
+    return tqdm(
+        total=total,
+        desc=desc,
+        unit="q",
+        dynamic_ncols=True,
+        leave=True,
+        file=sys.stderr,
+    )
+
+
 class RagasEvalCache:
     """Small JSON cache for expensive generated answers and Ragas scores."""
 
@@ -792,11 +834,18 @@ def _evaluate_mode(
     ragas_cache: RagasEvalCache | None = None,
     ragas_metrics: Sequence[str] = (),
     ragas_cache_namespace: dict[str, Any] | None = None,
+    progress: bool = False,
 ) -> dict[str, Any]:
     mode_t0 = time.monotonic()
     query_results: list[dict[str, Any]] = []
     postprocess_jobs: list[dict[str, Any]] = []
     _, _, run_retrieval, serialise_result = _ablation_helpers()
+    retrieval_error_count = 0
+    retrieval_progress = _progress_bar(
+        enabled=progress,
+        total=len(test_cases),
+        desc=f"Retrieval {mode}",
+    )
 
     for index, test_case in enumerate(test_cases, start=1):
         query_t0 = time.monotonic()
@@ -813,6 +862,7 @@ def _evaluate_mode(
             )
         except Exception as exc:
             error = str(exc)
+            retrieval_error_count += 1
 
         latency_ms = (time.monotonic() - query_t0) * 1000.0
         retrieved_doc_ids = _retrieved_doc_ids(retrieved_results)
@@ -865,6 +915,12 @@ def _evaluate_mode(
                     "retrieved_doc_ids": retrieved_doc_ids,
                 }
             )
+
+        retrieval_progress.update(1)
+        if retrieval_error_count:
+            retrieval_progress.set_postfix(errors=retrieval_error_count)
+
+    retrieval_progress.close()
 
     def apply_postprocess_update(
         result_index: int,
@@ -938,6 +994,30 @@ def _evaluate_mode(
 
     if postprocess_jobs:
         worker_count = max(1, int(ragas_workers))
+        postprocess_cache_hits = 0
+        postprocess_error_count = 0
+        postprocess_progress = _progress_bar(
+            enabled=progress,
+            total=len(postprocess_jobs),
+            desc=f"RAGAS {mode}" if enable_ragas else f"Generation {mode}",
+        )
+
+        def update_postprocess_progress(
+            *,
+            cache_hit: bool,
+            update: dict[str, Any],
+        ) -> None:
+            nonlocal postprocess_cache_hits, postprocess_error_count
+            if cache_hit:
+                postprocess_cache_hits += 1
+            if update.get("generation_error") or update.get("ragas_error"):
+                postprocess_error_count += 1
+            postprocess_progress.update(1)
+            postprocess_progress.set_postfix(
+                cache=postprocess_cache_hits,
+                errors=postprocess_error_count,
+            )
+
         if worker_count == 1 or len(postprocess_jobs) == 1:
             for job in postprocess_jobs:
                 result_index, update, cache_hit = run_postprocess_job(job)
@@ -947,6 +1027,7 @@ def _evaluate_mode(
                     job["query_t0"],
                     cache_hit=cache_hit,
                 )
+                update_postprocess_progress(cache_hit=cache_hit, update=update)
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = {
@@ -962,6 +1043,9 @@ def _evaluate_mode(
                         job["query_t0"],
                         cache_hit=cache_hit,
                     )
+                    update_postprocess_progress(cache_hit=cache_hit, update=update)
+
+        postprocess_progress.close()
 
     evaluated_count = sum(1 for item in query_results if not item.get("skipped"))
     error_count = sum(1 for item in query_results if item.get("error"))
@@ -1179,6 +1263,7 @@ def run_enterprise_rag_eval(
         "ragas_workers": int(args.ragas_workers),
         "ragas_cache": str(ragas_cache_path) if ragas_cache_path else None,
         "ragas_cache_namespace": ragas_cache_namespace if ragas_cache_path else None,
+        "progress": bool(args.progress),
         "max_context_chars": args.max_context_chars,
         "filters": {
             "question_types": list(args.question_types or []),
@@ -1207,6 +1292,7 @@ def run_enterprise_rag_eval(
             ragas_cache=ragas_cache,
             ragas_metrics=ragas_metrics,
             ragas_cache_namespace=ragas_cache_namespace,
+            progress=bool(args.progress),
         )
     report["total_elapsed_ms"] = round((time.monotonic() - total_t0) * 1000.0, 1)
 
