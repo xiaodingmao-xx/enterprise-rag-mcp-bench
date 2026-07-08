@@ -7,8 +7,8 @@
 # =============================================================================
 llm:
   provider: "bailian"  # Options: openai, azure, ollama, deepseek, bailian
-  model: "qwen3.7-plus"
-  deployment_name: "qwen3.7-plus"
+  model: "qwen3.7-max"
+  deployment_name: "qwen3.7-max"
   # azure_endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
   api_version: "2024-02-15-preview"
   base_url: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
