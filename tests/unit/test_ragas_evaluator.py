@@ -13,6 +13,7 @@ and deterministic.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 from typing import Any, Dict
 
@@ -245,6 +246,60 @@ class TestRagasEvaluatorEvaluate:
         )
 
         assert "faithfulness" in result
+
+    def test_run_ragas_uses_ascore_and_closes_async_clients(self, monkeypatch: Any) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        calls: list[dict[str, Any]] = []
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+        class FakeResult:
+            value = 0.73
+
+        class FakeFaithfulness:
+            def __init__(self, llm: Any) -> None:
+                self.llm = llm
+
+            async def ascore(self, **kwargs: Any) -> FakeResult:
+                calls.append(kwargs)
+                return FakeResult()
+
+            def score(self, **kwargs: Any) -> FakeResult:
+                raise AssertionError("sync score() should not be used")
+
+        llm_client = FakeClient()
+        emb_client = FakeClient()
+        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator._build_wrappers = MagicMock(  # type: ignore[method-assign]
+            return_value=(
+                SimpleNamespace(client=llm_client),
+                SimpleNamespace(client=emb_client),
+            ),
+        )
+
+        monkeypatch.setattr(
+            "ragas.metrics.collections.Faithfulness",
+            FakeFaithfulness,
+        )
+
+        scores = evaluator._run_ragas("query", ["ctx"], "answer")
+
+        assert scores == {"faithfulness": 0.73}
+        assert calls == [
+            {
+                "user_input": "query",
+                "response": "answer",
+                "retrieved_contexts": ["ctx"],
+            }
+        ]
+        assert llm_client.closed is True
+        assert emb_client.closed is True
 
 
 class TestRagasEvaluatorFactory:

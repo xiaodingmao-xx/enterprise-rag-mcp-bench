@@ -13,6 +13,8 @@ Design Principles:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import os
 from typing import Any, Dict, List, Optional, Sequence
@@ -162,12 +164,25 @@ class RagasEvaluator(BaseEvaluator):
         contexts: List[str],
         answer: str,
     ) -> Dict[str, float]:
+        """Run Ragas metrics from the synchronous evaluator interface."""
+
+        return asyncio.run(self._run_ragas_async(query, contexts, answer))
+
+    async def _run_ragas_async(
+        self,
+        query: str,
+        contexts: List[str],
+        answer: str,
+    ) -> Dict[str, float]:
         """Execute Ragas collections metrics and return normalised scores.
 
         Ragas 0.4+ collections metrics use per-metric ``score()`` instead of
         the legacy ``evaluate()`` pipeline.  Each metric has its own signature:
         - Faithfulness / ContextPrecision: (user_input, response, retrieved_contexts)
         - AnswerRelevancy: (user_input, response)
+
+        We call ``ascore()`` directly so all async OpenAI/httpx work is bound to
+        one event loop and clients can be closed before that loop exits.
         """
         from ragas.metrics.collections import (
             Faithfulness,
@@ -180,26 +195,76 @@ class RagasEvaluator(BaseEvaluator):
 
         scores: Dict[str, float] = {}
 
-        for metric_name in self._metric_names:
-            if metric_name == FAITHFULNESS:
-                m = Faithfulness(llm=llm)
-                result = m.score(
-                    user_input=query, response=answer, retrieved_contexts=contexts,
-                )
-            elif metric_name == ANSWER_RELEVANCY:
-                m = AnswerRelevancy(llm=llm, embeddings=embeddings)
-                result = m.score(user_input=query, response=answer)
-            elif metric_name == CONTEXT_PRECISION:
-                m = ContextPrecisionWithoutReference(llm=llm)
-                result = m.score(
-                    user_input=query, response=answer, retrieved_contexts=contexts,
-                )
-            else:
-                continue
+        try:
+            for metric_name in self._metric_names:
+                if metric_name == FAITHFULNESS:
+                    metric = Faithfulness(llm=llm)
+                    result = await metric.ascore(
+                        user_input=query,
+                        response=answer,
+                        retrieved_contexts=contexts,
+                    )
+                elif metric_name == ANSWER_RELEVANCY:
+                    metric = AnswerRelevancy(llm=llm, embeddings=embeddings)
+                    result = await metric.ascore(user_input=query, response=answer)
+                elif metric_name == CONTEXT_PRECISION:
+                    metric = ContextPrecisionWithoutReference(llm=llm)
+                    result = await metric.ascore(
+                        user_input=query,
+                        response=answer,
+                        retrieved_contexts=contexts,
+                    )
+                else:
+                    continue
 
-            scores[metric_name] = float(result.value) if result.value is not None else 0.0
+                scores[metric_name] = (
+                    float(result.value) if result.value is not None else 0.0
+                )
+        finally:
+            await self._close_ragas_clients(llm, embeddings)
 
         return scores
+
+    async def _close_ragas_clients(self, *wrappers: Any) -> None:
+        """Close async clients owned by Ragas wrappers before the loop exits."""
+
+        seen: set[int] = set()
+        for wrapper in wrappers:
+            for client in self._iter_possible_clients(wrapper):
+                if client is None or id(client) in seen:
+                    continue
+                seen.add(id(client))
+
+                try:
+                    aclose = getattr(client, "aclose", None)
+                    if callable(aclose):
+                        await aclose()
+                        continue
+
+                    close = getattr(client, "close", None)
+                    if callable(close):
+                        result = close()
+                        if inspect.isawaitable(result):
+                            await result
+                except Exception:
+                    logger.debug(
+                        "Failed to close Ragas client %s",
+                        type(client).__name__,
+                        exc_info=True,
+                    )
+
+    def _iter_possible_clients(self, wrapper: Any) -> List[Any]:
+        """Return wrapper clients, including common nested client attributes."""
+
+        clients: List[Any] = []
+        direct_client = getattr(wrapper, "client", None)
+        clients.append(direct_client)
+        if direct_client is not None:
+            clients.extend(
+                getattr(direct_client, attr, None)
+                for attr in ("client", "_client", "_async_client")
+            )
+        return clients
 
     def _build_wrappers(self) -> tuple:
         """Build Ragas LLM and Embedding wrappers from project settings.
