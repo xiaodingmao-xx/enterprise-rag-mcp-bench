@@ -170,6 +170,68 @@ class TestRagasEvaluatorLLMArgs:
             "temperature": 0.0,
         }
 
+    def test_bailian_extra_body_overrides_thinking_true(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+        llm_cfg = MagicMock()
+        llm_cfg.model = "qwen-plus"
+        llm_cfg.extra_body = {"enable_thinking": True}
+
+        kwargs = evaluator._ragas_llm_kwargs(llm_cfg, "bailian")
+
+        assert kwargs["extra_body"]["enable_thinking"] is False
+
+    def test_bailian_base_url_disables_thinking_for_openai_provider(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+        llm_cfg = MagicMock()
+        llm_cfg.model = "qwen-plus"
+        llm_cfg.extra_body = {}
+
+        kwargs = evaluator._ragas_llm_kwargs(
+            llm_cfg,
+            "openai",
+            "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        )
+
+        assert kwargs["extra_body"]["enable_thinking"] is False
+
+    def test_deepseek_chat_disables_thinking_with_deepseek_parameter(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+        llm_cfg = MagicMock()
+        llm_cfg.model = "deepseek-chat"
+        llm_cfg.extra_body = {}
+
+        kwargs = evaluator._ragas_llm_kwargs(
+            llm_cfg,
+            "deepseek",
+            "https://api.deepseek.com",
+        )
+
+        assert kwargs["max_tokens"] == 8192
+        assert "enable_thinking" not in kwargs.get("extra_body", {})
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_deepseek_base_url_disables_thinking_for_openai_provider(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+        llm_cfg = MagicMock()
+        llm_cfg.model = "deepseek-v4-pro"
+        llm_cfg.extra_body = {"thinking": {"type": "enabled"}}
+
+        kwargs = evaluator._ragas_llm_kwargs(
+            llm_cfg,
+            "openai",
+            "https://api.deepseek.com",
+        )
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
 
 class TestRagasEvaluatorEvaluate:
     """Tests for evaluate() with mocked Ragas backend."""

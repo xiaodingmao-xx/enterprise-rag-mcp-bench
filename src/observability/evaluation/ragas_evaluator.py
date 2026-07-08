@@ -152,7 +152,9 @@ class RagasEvaluator(BaseEvaluator):
             result = self._run_ragas(query, contexts, generated_answer)
         except Exception as exc:
             logger.error("Ragas evaluation failed: %s", exc, exc_info=True)
-            raise RuntimeError(f"Ragas evaluation failed: {exc}") from exc
+            raise RuntimeError(
+                f"Ragas evaluation failed: {self._friendly_ragas_error(exc)}"
+            ) from exc
 
         return result
 
@@ -285,11 +287,11 @@ class RagasEvaluator(BaseEvaluator):
         # ── LLM ──
         llm_cfg = self.settings.llm
         provider = str(llm_cfg.provider).lower()
+        llm_model = str(llm_cfg.model)
         llm_base_url = self._optional_str(getattr(llm_cfg, "base_url", None))
         llm_azure_endpoint = self._optional_str(
             getattr(llm_cfg, "azure_endpoint", None)
         )
-
         # Azure-compatible mode: if azure_endpoint is configured, use Azure
         # client even when provider is "openai" (matches project convention).
         use_azure_llm = (
@@ -321,9 +323,10 @@ class RagasEvaluator(BaseEvaluator):
             )
 
         llm = llm_factory(
-            llm_cfg.model,
+            llm_model,
+            provider=provider,
             client=llm_client,
-            **self._ragas_llm_kwargs(llm_cfg, provider),
+            **self._ragas_llm_kwargs(llm_cfg, provider, llm_base_url),
         )
 
         # ── Embeddings ──
@@ -367,18 +370,82 @@ class RagasEvaluator(BaseEvaluator):
 
         return llm, embeddings
 
-    def _ragas_llm_kwargs(self, llm_cfg: Any, provider: str) -> Dict[str, Any]:
+    def _ragas_llm_kwargs(
+        self,
+        llm_cfg: Any,
+        provider: str,
+        base_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {"max_tokens": 8192}
         extra_body = getattr(llm_cfg, "extra_body", None)
         if isinstance(extra_body, dict):
             kwargs["extra_body"] = dict(extra_body)
 
-        if provider in {"bailian", "aliyun_bailian", "dashscope"}:
+        if self._is_thinking_mode_provider(provider, base_url, getattr(llm_cfg, "model", None)):
             provider_extra_body = dict(kwargs.get("extra_body", {}))
-            provider_extra_body.setdefault("enable_thinking", False)
+            provider_extra_body["enable_thinking"] = False
+            kwargs["extra_body"] = provider_extra_body
+
+        if self._is_deepseek_provider(provider, base_url, getattr(llm_cfg, "model", None)):
+            provider_extra_body = dict(kwargs.get("extra_body", {}))
+            provider_extra_body["thinking"] = {"type": "disabled"}
             kwargs["extra_body"] = provider_extra_body
 
         return kwargs
+
+    def _is_thinking_mode_provider(
+        self,
+        provider: str,
+        base_url: Optional[str],
+        model: Any,
+    ) -> bool:
+        provider_text = str(provider or "").strip().lower()
+        if provider_text in {"bailian", "aliyun_bailian", "dashscope"}:
+            return True
+
+        base_url_text = str(base_url or "").strip().lower()
+        if any(
+            marker in base_url_text
+            for marker in (
+                "dashscope.aliyuncs.com",
+                ".maas.aliyuncs.com",
+                "bailian",
+            )
+        ):
+            return True
+
+        model_text = str(model or "").strip().lower()
+        return model_text.startswith("qwen")
+
+    def _is_deepseek_provider(
+        self,
+        provider: str,
+        base_url: Optional[str],
+        model: Any,
+    ) -> bool:
+        provider_text = str(provider or "").strip().lower()
+        if provider_text == "deepseek":
+            return True
+
+        base_url_text = str(base_url or "").strip().lower()
+        if "deepseek.com" in base_url_text:
+            return True
+
+        model_text = str(model or "").strip().lower()
+        return model_text.startswith("deepseek")
+
+    def _friendly_ragas_error(self, exc: Exception) -> str:
+        detail = str(exc)
+        lower_detail = detail.lower()
+        if "tool_choice" in lower_detail and "thinking" in lower_detail:
+            return (
+                f"{detail}. Ragas uses instructor structured output, which sends "
+                "tool_choice. Thinking/reasoning models usually reject this. "
+                "For DeepSeek, disable thinking with "
+                "extra_body.thinking.type=disabled. For Qwen/Bailian, disable "
+                "thinking with extra_body.enable_thinking=false."
+            )
+        return detail
 
     @staticmethod
     def _optional_str(value: Any) -> Optional[str]:
