@@ -140,6 +140,36 @@ class TestRagasEvaluatorTextExtraction:
         assert result == ["hello", "world"]
 
 
+class TestRagasEvaluatorLLMArgs:
+    """Tests for provider-specific Ragas LLM arguments."""
+
+    def test_bailian_extra_body_disables_thinking_by_default(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+        llm_cfg = MagicMock()
+        llm_cfg.extra_body = {}
+
+        kwargs = evaluator._ragas_llm_kwargs(llm_cfg, "bailian")
+
+        assert kwargs["extra_body"]["enable_thinking"] is False
+        assert kwargs["max_tokens"] == 8192
+
+    def test_existing_extra_body_is_preserved(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+        llm_cfg = MagicMock()
+        llm_cfg.extra_body = {"enable_thinking": False, "temperature": 0.0}
+
+        kwargs = evaluator._ragas_llm_kwargs(llm_cfg, "bailian")
+
+        assert kwargs["extra_body"] == {
+            "enable_thinking": False,
+            "temperature": 0.0,
+        }
+
+
 class TestRagasEvaluatorEvaluate:
     """Tests for evaluate() with mocked Ragas backend."""
 

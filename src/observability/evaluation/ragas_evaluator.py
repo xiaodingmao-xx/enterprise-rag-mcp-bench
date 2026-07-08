@@ -255,7 +255,11 @@ class RagasEvaluator(BaseEvaluator):
                 "Supported: azure or OpenAI-compatible providers with base_url."
             )
 
-        llm = llm_factory(llm_cfg.model, client=llm_client, max_tokens=8192)
+        llm = llm_factory(
+            llm_cfg.model,
+            client=llm_client,
+            **self._ragas_llm_kwargs(llm_cfg, provider),
+        )
 
         # ── Embeddings ──
         emb_cfg = self.settings.embedding
@@ -297,6 +301,19 @@ class RagasEvaluator(BaseEvaluator):
         embeddings = OpenAIEmbeddings(model=emb_cfg.model, client=emb_client)
 
         return llm, embeddings
+
+    def _ragas_llm_kwargs(self, llm_cfg: Any, provider: str) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {"max_tokens": 8192}
+        extra_body = getattr(llm_cfg, "extra_body", None)
+        if isinstance(extra_body, dict):
+            kwargs["extra_body"] = dict(extra_body)
+
+        if provider in {"bailian", "aliyun_bailian", "dashscope"}:
+            provider_extra_body = dict(kwargs.get("extra_body", {}))
+            provider_extra_body.setdefault("enable_thinking", False)
+            kwargs["extra_body"] = provider_extra_body
+
+        return kwargs
 
     @staticmethod
     def _optional_str(value: Any) -> Optional[str]:
