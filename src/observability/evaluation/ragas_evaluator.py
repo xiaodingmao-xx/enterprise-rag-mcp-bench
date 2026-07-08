@@ -324,7 +324,7 @@ class RagasEvaluator(BaseEvaluator):
 
         llm = llm_factory(
             llm_model,
-            provider=provider,
+            provider=self._ragas_factory_provider(provider),
             client=llm_client,
             **self._ragas_llm_kwargs(llm_cfg, provider, llm_base_url),
         )
@@ -369,6 +369,14 @@ class RagasEvaluator(BaseEvaluator):
         embeddings = OpenAIEmbeddings(model=emb_cfg.model, client=emb_client)
 
         return llm, embeddings
+
+    def _ragas_factory_provider(self, provider: str) -> str:
+        """Map project provider names to provider names accepted by Ragas."""
+
+        provider_text = str(provider or "").strip().lower()
+        if provider_text in OPENAI_COMPATIBLE_PROVIDERS or provider_text == "azure":
+            return "openai"
+        return provider_text
 
     def _ragas_llm_kwargs(
         self,

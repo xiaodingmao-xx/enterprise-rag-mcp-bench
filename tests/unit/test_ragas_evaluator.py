@@ -144,6 +144,16 @@ class TestRagasEvaluatorTextExtraction:
 class TestRagasEvaluatorLLMArgs:
     """Tests for provider-specific Ragas LLM arguments."""
 
+    def test_openai_compatible_providers_use_openai_ragas_factory_provider(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = object.__new__(RagasEvaluator)
+
+        assert evaluator._ragas_factory_provider("bailian") == "openai"
+        assert evaluator._ragas_factory_provider("deepseek") == "openai"
+        assert evaluator._ragas_factory_provider("dashscope") == "openai"
+        assert evaluator._ragas_factory_provider("openai") == "openai"
+
     def test_bailian_extra_body_disables_thinking_by_default(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
@@ -362,6 +372,63 @@ class TestRagasEvaluatorEvaluate:
         ]
         assert llm_client.closed is True
         assert emb_client.closed is True
+
+    def test_build_wrappers_maps_deepseek_to_openai_for_ragas_factory(
+        self,
+        monkeypatch: Any,
+    ) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        created: dict[str, Any] = {}
+
+        class FakeAsyncOpenAI:
+            def __init__(self, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+        class FakeOpenAIEmbeddings:
+            def __init__(self, **kwargs: Any) -> None:
+                self.kwargs = kwargs
+
+        def fake_llm_factory(*args: Any, **kwargs: Any) -> str:
+            created["llm_args"] = args
+            created["llm_kwargs"] = kwargs
+            return "llm"
+
+        monkeypatch.setattr("openai.AsyncOpenAI", FakeAsyncOpenAI)
+        monkeypatch.setattr("openai.AsyncAzureOpenAI", FakeAsyncOpenAI)
+        monkeypatch.setattr("ragas.llms.llm_factory", fake_llm_factory)
+        monkeypatch.setattr("ragas.embeddings.OpenAIEmbeddings", FakeOpenAIEmbeddings)
+
+        settings = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="deepseek",
+                model="deepseek-v4-pro",
+                base_url="https://api.deepseek.com",
+                azure_endpoint=None,
+                api_key="deepseek-key",
+                api_version=None,
+                extra_body={},
+            ),
+            embedding=SimpleNamespace(
+                provider="openai",
+                model="text-embedding-v4",
+                base_url="https://api.deepseek.com",
+                azure_endpoint=None,
+                api_key="embedding-key",
+                api_version=None,
+            ),
+        )
+
+        evaluator = RagasEvaluator(settings=settings, metrics=["faithfulness"])
+        llm, embeddings = evaluator._build_wrappers()
+
+        assert llm == "llm"
+        assert isinstance(embeddings, FakeOpenAIEmbeddings)
+        assert created["llm_args"] == ("deepseek-v4-pro",)
+        assert created["llm_kwargs"]["provider"] == "openai"
+        assert created["llm_kwargs"]["extra_body"]["thinking"] == {
+            "type": "disabled"
+        }
 
 
 class TestRagasEvaluatorFactory:
