@@ -245,6 +245,8 @@ class CoreReranker:
             return "llm"
         elif "CrossEncoder" in class_name:
             return "cross_encoder"
+        elif "Bailian" in class_name:
+            return "bailian"
         elif "None" in class_name:
             return "none"
         else:

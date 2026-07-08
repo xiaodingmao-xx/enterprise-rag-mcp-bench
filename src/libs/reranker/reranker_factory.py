@@ -27,6 +27,12 @@ def _lazy_import_cross_encoder_reranker():
     return CrossEncoderReranker
 
 
+def _lazy_import_bailian_reranker():
+    """Lazy import to keep HTTP provider dependencies optional."""
+    from src.libs.reranker.bailian_reranker import BailianReranker
+    return BailianReranker
+
+
 class RerankerFactory:
     """Factory for creating Reranker provider instances.
     
@@ -84,6 +90,12 @@ class RerankerFactory:
         if "cross_encoder" not in cls._PROVIDERS:
             CrossEncoderReranker = _lazy_import_cross_encoder_reranker()
             cls.register_provider("cross_encoder", CrossEncoderReranker)
+
+        # Lazy register Bailian/DashScope reranker aliases if not already registered
+        if "bailian" not in cls._PROVIDERS:
+            BailianReranker = _lazy_import_bailian_reranker()
+            for alias in ("bailian", "dashscope", "qwen_vl", "qwen3_vl"):
+                cls.register_provider(alias, BailianReranker)
         
         try:
             rerank_settings = settings.rerank

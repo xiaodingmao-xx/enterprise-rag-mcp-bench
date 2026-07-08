@@ -235,6 +235,11 @@ class RerankSettings:
     output_top_k: int = 5
     timeout_seconds: float = 30.0
     fallback_on_timeout: bool = True
+    api_key: Optional[str] = None
+    endpoint: Optional[str] = None
+    api_format: str = "dashscope"
+    instruct: Optional[str] = None
+    return_documents: bool = True
 
 
 @dataclass(frozen=True)
@@ -605,6 +610,29 @@ class Settings:
                         rerank.get("fallback_on_error", True),
                     )
                 ),
+                api_key=(
+                    str(rerank.get("api_key")).strip()
+                    if rerank.get("api_key") is not None
+                    and str(rerank.get("api_key")).strip()
+                    else None
+                ),
+                endpoint=(
+                    str(rerank.get("endpoint")).strip()
+                    if rerank.get("endpoint") is not None
+                    and str(rerank.get("endpoint")).strip()
+                    else None
+                ),
+                api_format=(
+                    str(rerank.get("api_format", "dashscope")).strip().lower()
+                    or "dashscope"
+                ),
+                instruct=(
+                    str(rerank.get("instruct")).strip()
+                    if rerank.get("instruct") is not None
+                    and str(rerank.get("instruct")).strip()
+                    else None
+                ),
+                return_documents=bool(rerank.get("return_documents", True)),
             ),
             evaluation=EvaluationSettings(
                 enabled=_require_bool(evaluation, "enabled", "evaluation"),

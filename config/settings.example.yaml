@@ -55,13 +55,25 @@ retrieval:
 
 rerank:
   enabled: false
-  provider: "none"
+  provider: "none"  # Options: none, cross_encoder, llm, bailian
   model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  # Bailian/DashScope reranker example:
+  # provider: "bailian"
+  # model: "qwen3-vl-rerank"
+  # endpoint: "https://your-endpoint/api/v1/services/rerank/text-rerank/text-rerank"
+  # api_format: "dashscope"
+  # qwen3-rerank compatible API example:
+  # model: "qwen3-rerank"
+  # endpoint: "https://your-workspace.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks"
+  # api_format: "compatible"
+  # instruct: "Given a web search query, retrieve relevant passages that answer the query."
+  # api_key: "${DASHSCOPE_API_KEY:-}"
   top_k: 5
   candidate_top_k: 20
   output_top_k: 5
   timeout_seconds: 10
   fallback_on_timeout: true
+  return_documents: true
 
 evaluation:
   enabled: false

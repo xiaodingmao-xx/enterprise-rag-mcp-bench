@@ -91,13 +91,18 @@ retrieval:
 # =============================================================================
 rerank:
   enabled: true
-  provider: "cross_encoder"  # Options: none, cross_encoder, llm
-  model: "BAAI/bge-reranker-v2-m3"
+  provider: "bailian"  # Options: none, cross_encoder, llm, bailian
+  model: "qwen3-vl-rerank"
+  endpoint: "https://llm-jsx5kseq9wdhdrdb.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+  api_format: "dashscope"
+  instruct: "Given an enterprise knowledge-base query, rank passages by how directly and specifically they provide evidence to answer the query. Prioritize passages that mention the requested entities, projects, people, dates, decisions, statuses, tickets, documents, messages, or source records. Prefer exact supporting evidence over generic semantic similarity."
+  api_key: "${DASHSCOPE_API_KEY:-}"
   top_k: 10
-  candidate_top_k: 50
+  candidate_top_k: 30
   output_top_k: 10
-  timeout_seconds: 30
+  timeout_seconds: 60
   fallback_on_timeout: true
+  return_documents: true
 
 # =============================================================================
 # Evaluation Configuration
