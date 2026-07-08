@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import scripts.run_enterprise_rag_eval as enterprise_eval
 from scripts.run_enterprise_rag_eval import (
     EnterpriseRAGTestCase,
+    RagasEvalCache,
     dedupe_keep_order,
     extract_dsid,
     format_markdown_table,
@@ -212,6 +213,91 @@ def test_evaluate_mode_records_ragas_faithfulness(monkeypatch) -> None:
     assert result["aggregate_metrics"]["faithfulness"] == 0.75
 
 
+def test_evaluate_mode_uses_ragas_cache(monkeypatch, tmp_path: Path) -> None:
+    retrieved = [
+        SimpleNamespace(
+            chunk_id="dsid_abcd1234_chunk_0001",
+            score=1.0,
+            text="The rollout was approved by the platform team.",
+            metadata={"source_path": "data/dsid_abcd1234.txt"},
+        )
+    ]
+
+    def fake_run_retrieval(**kwargs):
+        return retrieved
+
+    def fake_serialise_result(result):
+        return {
+            "chunk_id": result.chunk_id,
+            "score": result.score,
+            "metadata": result.metadata,
+            "text_preview": result.text,
+        }
+
+    def fake_ablation_helpers():
+        return enterprise_eval.MODES, None, fake_run_retrieval, fake_serialise_result
+
+    calls = {"generation": 0, "ragas": 0}
+
+    class FakeAnswerGenerator:
+        def chat(self, messages, **kwargs):  # noqa: ANN001, ANN002
+            calls["generation"] += 1
+            return SimpleNamespace(
+                content="The rollout was approved by the platform team."
+            )
+
+    class FakeRagasEvaluator:
+        def evaluate(self, **kwargs):  # noqa: ANN003
+            calls["ragas"] += 1
+            return {"faithfulness": 0.75}
+
+    monkeypatch.setattr(enterprise_eval, "_ablation_helpers", fake_ablation_helpers)
+
+    test_case = EnterpriseRAGTestCase(
+        question_id="q1",
+        query="Who approved the rollout?",
+        question_type="basic",
+        source_types=["github"],
+        expected_doc_ids=["dsid_abcd1234"],
+    )
+    cache = RagasEvalCache(tmp_path / "ragas_cache.json")
+
+    first = _evaluate_mode(
+        mode="hybrid",
+        test_cases=[test_case],
+        top_k=10,
+        candidate_k=30,
+        components={},
+        enable_generation=True,
+        enable_ragas=True,
+        answer_generator=FakeAnswerGenerator(),
+        ragas_evaluator=FakeRagasEvaluator(),
+        max_context_chars=1000,
+        ragas_cache=cache,
+        ragas_metrics=["faithfulness"],
+    )
+    second = _evaluate_mode(
+        mode="hybrid",
+        test_cases=[test_case],
+        top_k=10,
+        candidate_k=30,
+        components={},
+        enable_generation=True,
+        enable_ragas=True,
+        answer_generator=FakeAnswerGenerator(),
+        ragas_evaluator=FakeRagasEvaluator(),
+        max_context_chars=1000,
+        ragas_cache=cache,
+        ragas_metrics=["faithfulness"],
+    )
+
+    assert calls == {"generation": 1, "ragas": 1}
+    assert first["query_results"][0]["ragas_cache_hit"] is False
+    assert second["query_results"][0]["ragas_cache_hit"] is True
+    assert second["ragas_cache_hit_count"] == 1
+    assert second["aggregate_metrics"]["faithfulness"] == 0.75
+
+
 def test_markdown_table_includes_ragas_columns() -> None:
     report = {
         "enable_generation": True,
@@ -241,3 +327,35 @@ def test_markdown_table_includes_ragas_columns() -> None:
     assert "faithfulness" in markdown
     assert "Gen Latency ms" in markdown
     assert "RAGAS Latency ms" in markdown
+
+
+def test_markdown_table_includes_ragas_cache_hits() -> None:
+    report = {
+        "enable_generation": True,
+        "enable_ragas": True,
+        "ragas_cache": "eval/cache/enterprise_rag_ragas_cache.json",
+        "ragas_metrics": ["faithfulness"],
+        "modes": ["hybrid"],
+        "results": {
+            "hybrid": {
+                "evaluated_query_count": 1,
+                "ragas_cache_hit_count": 1,
+                "aggregate_metrics": {
+                    "recall@10": 1.0,
+                    "precision@10": 0.1,
+                    "mrr@10": 1.0,
+                    "ndcg@10": 1.0,
+                    "hit@10": 1.0,
+                    "latency_ms": 20.0,
+                    "generation_latency_ms": 0.0,
+                    "faithfulness": 0.75,
+                    "ragas_latency_ms": 0.0,
+                },
+            }
+        },
+    }
+
+    markdown = format_markdown_table(report, top_k=10)
+
+    assert "RAGAS Cache Hits" in markdown
+    assert "| hybrid | 1 | 1.0000 | 0.1000 | 1.0000 | 1.0000 | 1.0000 | 20.0 | 0.0 | 0.7500 | 0.0 | 1 |" in markdown

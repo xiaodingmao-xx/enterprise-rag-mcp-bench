@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import sys
+import threading
 import time
 from collections.abc import Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -178,6 +181,25 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8000,
         help="Maximum total retrieved context characters used for answer generation.",
+    )
+    parser.add_argument(
+        "--ragas-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of worker threads for answer generation and Ragas evaluation. "
+            "Only applies when --enable-generation or --enable-ragas is used."
+        ),
+    )
+    parser.add_argument(
+        "--ragas-cache",
+        nargs="?",
+        const="eval/cache/enterprise_rag_ragas_cache.json",
+        default=None,
+        help=(
+            "Enable a JSON cache for generated answers and Ragas scores. "
+            "Optionally pass a cache file path."
+        ),
     )
     return parser.parse_args()
 
@@ -614,6 +636,146 @@ def _create_ragas_evaluator(
         raise RuntimeError(f"Failed to initialize Ragas evaluator: {exc}") from exc
 
 
+class RagasEvalCache:
+    """Small JSON cache for expensive generated answers and Ragas scores."""
+
+    VERSION = 1
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._data: dict[str, Any] = {
+            "version": self.VERSION,
+            "entries": {},
+        }
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(raw, dict):
+            return
+        entries = raw.get("entries")
+        if not isinstance(entries, dict):
+            return
+        self._data = {
+            "version": raw.get("version", self.VERSION),
+            "entries": entries,
+        }
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        with self._lock:
+            entry = self._data.get("entries", {}).get(key)
+            return dict(entry) if isinstance(entry, dict) else None
+
+    def set(self, key: str, value: dict[str, Any]) -> None:
+        with self._lock:
+            self._data.setdefault("entries", {})[key] = value
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp_path.write_text(
+                json.dumps(self._data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp_path.replace(self.path)
+
+
+def _ragas_cache_key(
+    *,
+    mode: str,
+    test_case: EnterpriseRAGTestCase,
+    retrieved_doc_ids: Sequence[str],
+    contexts: Sequence[str],
+    ragas_metrics: Sequence[str],
+    max_context_chars: int,
+    namespace: dict[str, Any] | None = None,
+) -> str:
+    payload = {
+        "version": RagasEvalCache.VERSION,
+        "namespace": namespace or {},
+        "mode": mode,
+        "question_id": test_case.question_id,
+        "query": test_case.query,
+        "retrieved_doc_ids": list(retrieved_doc_ids),
+        "contexts": list(contexts),
+        "ragas_metrics": [str(metric).lower() for metric in ragas_metrics],
+        "max_context_chars": int(max_context_chars),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _run_generation_and_ragas(
+    *,
+    query: str,
+    contexts: Sequence[str],
+    enable_generation: bool,
+    enable_ragas: bool,
+    answer_generator: Any | None,
+    ragas_evaluator: Any | None,
+) -> dict[str, Any]:
+    metrics: dict[str, float] = {}
+    generated_answer: str | None = None
+    generation_error: str | None = None
+    generation_latency_ms: float | None = None
+    ragas_scores: dict[str, float] = {}
+    ragas_error: str | None = None
+    ragas_latency_ms: float | None = None
+
+    if enable_generation or enable_ragas:
+        generation_t0 = time.monotonic()
+        try:
+            generated_answer = _generate_grounded_answer(
+                query=query,
+                contexts=contexts,
+                answer_generator=answer_generator,
+            )
+        except Exception as exc:
+            generation_error = str(exc)
+        generation_latency_ms = (time.monotonic() - generation_t0) * 1000.0
+        metrics["generation_latency_ms"] = round(generation_latency_ms, 1)
+
+    if enable_ragas:
+        ragas_t0 = time.monotonic()
+        if ragas_evaluator is None:
+            ragas_error = "ragas evaluator is not configured"
+        elif not generated_answer:
+            ragas_error = generation_error or "missing generated answer"
+        elif not contexts:
+            ragas_error = "missing retrieved contexts"
+        else:
+            try:
+                ragas_scores = ragas_evaluator.evaluate(
+                    query=query,
+                    retrieved_chunks=[{"text": context} for context in contexts],
+                    generated_answer=generated_answer,
+                )
+                metrics.update(
+                    {
+                        key: round(float(value), 4)
+                        for key, value in ragas_scores.items()
+                    }
+                )
+            except Exception as exc:
+                ragas_error = str(exc)
+        ragas_latency_ms = (time.monotonic() - ragas_t0) * 1000.0
+        metrics["ragas_latency_ms"] = round(ragas_latency_ms, 1)
+
+    return {
+        "generated_answer": generated_answer,
+        "generation_error": generation_error,
+        "generation_latency_ms": generation_latency_ms,
+        "ragas": ragas_scores,
+        "ragas_error": ragas_error,
+        "ragas_latency_ms": ragas_latency_ms,
+        "metrics": metrics,
+    }
+
+
 def _evaluate_mode(
     *,
     mode: str,
@@ -626,9 +788,14 @@ def _evaluate_mode(
     answer_generator: Any | None = None,
     ragas_evaluator: Any | None = None,
     max_context_chars: int = 8000,
+    ragas_workers: int = 1,
+    ragas_cache: RagasEvalCache | None = None,
+    ragas_metrics: Sequence[str] = (),
+    ragas_cache_namespace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode_t0 = time.monotonic()
     query_results: list[dict[str, Any]] = []
+    postprocess_jobs: list[dict[str, Any]] = []
     _, _, run_retrieval, serialise_result = _ablation_helpers()
 
     for index, test_case in enumerate(test_cases, start=1):
@@ -667,58 +834,6 @@ def _evaluate_mode(
             )
 
         contexts = _result_texts(retrieved_results, max_context_chars)
-        generated_answer: str | None = None
-        generation_error: str | None = None
-        generation_latency_ms: float | None = None
-        ragas_scores: dict[str, float] = {}
-        ragas_error: str | None = None
-        ragas_latency_ms: float | None = None
-
-        if enable_generation or enable_ragas:
-            generation_t0 = time.monotonic()
-            try:
-                generated_answer = _generate_grounded_answer(
-                    query=test_case.query,
-                    contexts=contexts,
-                    answer_generator=answer_generator,
-                )
-            except Exception as exc:
-                generation_error = str(exc)
-            generation_latency_ms = (time.monotonic() - generation_t0) * 1000.0
-            metrics["generation_latency_ms"] = round(generation_latency_ms, 1)
-
-        if enable_ragas:
-            ragas_t0 = time.monotonic()
-            if ragas_evaluator is None:
-                ragas_error = "ragas evaluator is not configured"
-            elif not generated_answer:
-                ragas_error = generation_error or "missing generated answer"
-            elif not contexts:
-                ragas_error = "missing retrieved contexts"
-            else:
-                try:
-                    ragas_scores = ragas_evaluator.evaluate(
-                        query=test_case.query,
-                        retrieved_chunks=[{"text": context} for context in contexts],
-                        generated_answer=generated_answer,
-                    )
-                    metrics.update(
-                        {
-                            key: round(float(value), 4)
-                            for key, value in ragas_scores.items()
-                        }
-                    )
-                except Exception as exc:
-                    ragas_error = str(exc)
-            ragas_latency_ms = (time.monotonic() - ragas_t0) * 1000.0
-            metrics["ragas_latency_ms"] = round(ragas_latency_ms, 1)
-
-        if enable_generation or enable_ragas:
-            metrics["end_to_end_latency_ms"] = round(
-                (time.monotonic() - query_t0) * 1000.0,
-                1,
-            )
-
         query_results.append(
             {
                 "index": index,
@@ -728,10 +843,11 @@ def _evaluate_mode(
                 "query": test_case.query,
                 "expected_doc_ids": test_case.expected_doc_ids,
                 "retrieved_doc_ids": retrieved_doc_ids,
-                "generated_answer": generated_answer,
-                "generation_error": generation_error,
-                "ragas": ragas_scores,
-                "ragas_error": ragas_error,
+                "generated_answer": None,
+                "generation_error": None,
+                "ragas": {},
+                "ragas_error": None,
+                "ragas_cache_hit": False,
                 "metrics": metrics,
                 "skipped": skipped,
                 "error": error,
@@ -739,8 +855,119 @@ def _evaluate_mode(
             }
         )
 
+        if enable_generation or enable_ragas:
+            postprocess_jobs.append(
+                {
+                    "result_index": len(query_results) - 1,
+                    "query_t0": query_t0,
+                    "test_case": test_case,
+                    "contexts": contexts,
+                    "retrieved_doc_ids": retrieved_doc_ids,
+                }
+            )
+
+    def apply_postprocess_update(
+        result_index: int,
+        update: dict[str, Any],
+        query_t0: float,
+        *,
+        cache_hit: bool,
+    ) -> None:
+        query_result = query_results[result_index]
+        query_result["generated_answer"] = update.get("generated_answer")
+        query_result["generation_error"] = update.get("generation_error")
+        query_result["ragas"] = update.get("ragas", {})
+        query_result["ragas_error"] = update.get("ragas_error")
+        query_result["ragas_cache_hit"] = cache_hit
+        query_result["metrics"].update(update.get("metrics", {}))
+        if cache_hit:
+            if enable_generation or enable_ragas:
+                query_result["metrics"]["generation_latency_ms"] = 0.0
+            if enable_ragas:
+                query_result["metrics"]["ragas_latency_ms"] = 0.0
+        query_result["metrics"]["end_to_end_latency_ms"] = round(
+            (time.monotonic() - query_t0) * 1000.0,
+            1,
+        )
+
+    def run_postprocess_job(job: dict[str, Any]) -> tuple[int, dict[str, Any], bool]:
+        test_case = job["test_case"]
+        contexts = job["contexts"]
+        retrieved_doc_ids = job["retrieved_doc_ids"]
+        cache_key = _ragas_cache_key(
+            mode=mode,
+            test_case=test_case,
+            retrieved_doc_ids=retrieved_doc_ids,
+            contexts=contexts,
+            ragas_metrics=ragas_metrics,
+            max_context_chars=max_context_chars,
+            namespace=ragas_cache_namespace,
+        )
+
+        if ragas_cache is not None:
+            try:
+                cached = ragas_cache.get(cache_key)
+            except Exception:
+                cached = None
+            if cached is not None:
+                return job["result_index"], cached, True
+
+        update = _run_generation_and_ragas(
+            query=test_case.query,
+            contexts=contexts,
+            enable_generation=enable_generation,
+            enable_ragas=enable_ragas,
+            answer_generator=answer_generator,
+            ragas_evaluator=ragas_evaluator,
+        )
+
+        if ragas_cache is not None:
+            can_cache_generation = bool(update.get("generated_answer")) and not update.get(
+                "generation_error"
+            )
+            can_cache_ragas = (not enable_ragas) or (
+                bool(update.get("ragas")) and not update.get("ragas_error")
+            )
+            if can_cache_generation and can_cache_ragas:
+                try:
+                    ragas_cache.set(cache_key, update)
+                except Exception:
+                    pass
+
+        return job["result_index"], update, False
+
+    if postprocess_jobs:
+        worker_count = max(1, int(ragas_workers))
+        if worker_count == 1 or len(postprocess_jobs) == 1:
+            for job in postprocess_jobs:
+                result_index, update, cache_hit = run_postprocess_job(job)
+                apply_postprocess_update(
+                    result_index,
+                    update,
+                    job["query_t0"],
+                    cache_hit=cache_hit,
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(run_postprocess_job, job): job
+                    for job in postprocess_jobs
+                }
+                for future in as_completed(futures):
+                    job = futures[future]
+                    result_index, update, cache_hit = future.result()
+                    apply_postprocess_update(
+                        result_index,
+                        update,
+                        job["query_t0"],
+                        cache_hit=cache_hit,
+                    )
+
     evaluated_count = sum(1 for item in query_results if not item.get("skipped"))
     error_count = sum(1 for item in query_results if item.get("error"))
+    ragas_cache_hit_count = sum(
+        1 for item in query_results if item.get("ragas_cache_hit")
+    )
 
     return {
         "mode": mode,
@@ -748,6 +975,7 @@ def _evaluate_mode(
         "evaluated_query_count": evaluated_count,
         "skipped_query_count": len(query_results) - evaluated_count,
         "error_count": error_count,
+        "ragas_cache_hit_count": ragas_cache_hit_count,
         "aggregate_metrics": _aggregate_query_metrics(query_results, top_k),
         "elapsed_ms": round((time.monotonic() - mode_t0) * 1000.0, 1),
         "query_results": query_results,
@@ -797,6 +1025,7 @@ def format_markdown_table(report: dict[str, Any], top_k: int) -> str:
         report.get("enable_ragas")
     )
     include_ragas = bool(report.get("enable_ragas"))
+    include_ragas_cache = bool(report.get("ragas_cache"))
 
     headers = [
         "Mode",
@@ -813,6 +1042,8 @@ def format_markdown_table(report: dict[str, Any], top_k: int) -> str:
     if include_ragas:
         headers.extend(ragas_metrics)
         headers.append("RAGAS Latency ms")
+    if include_ragas_cache:
+        headers.append("RAGAS Cache Hits")
 
     rows = [
         "| " + " | ".join(headers) + " |",
@@ -837,6 +1068,8 @@ def format_markdown_table(report: dict[str, Any], top_k: int) -> str:
         if include_ragas:
             row.extend(_format_metric(aggregate.get(metric)) for metric in ragas_metrics)
             row.append(_format_metric(aggregate.get("ragas_latency_ms"), digits=1))
+        if include_ragas_cache:
+            row.append(str(mode_result.get("ragas_cache_hit_count", 0)))
 
         rows.append(
             "| "
@@ -858,10 +1091,13 @@ def run_enterprise_rag_eval(
         raise ValueError("--max-questions must be greater than 0 when provided")
     if args.max_context_chars <= 0:
         raise ValueError("--max-context-chars must be greater than 0")
+    if args.ragas_workers <= 0:
+        raise ValueError("--ragas-workers must be greater than 0")
 
     config_path = _resolve_path(args.config)
     questions_path = _resolve_questions_file(args.questions_file)
     output_dir = _resolve_path(args.output_dir)
+    ragas_cache_path = _resolve_path(args.ragas_cache) if args.ragas_cache else None
     effective_candidate_k = (
         max(args.candidate_k, args.top_k) if args.candidate_k > 0 else args.top_k * 2
     )
@@ -905,6 +1141,13 @@ def run_enterprise_rag_eval(
         enabled=bool(args.enable_ragas),
         metrics=ragas_metrics,
     )
+    ragas_cache = RagasEvalCache(ragas_cache_path) if ragas_cache_path else None
+    ragas_cache_namespace = {
+        "llm_provider": getattr(settings.llm, "provider", None),
+        "llm_model": getattr(settings.llm, "model", None),
+        "embedding_provider": getattr(settings.embedding, "provider", None),
+        "embedding_model": getattr(settings.embedding, "model", None),
+    }
 
     warnings: list[str] = []
     collection_count = _collection_record_count(components)
@@ -933,6 +1176,9 @@ def run_enterprise_rag_eval(
         "enable_generation": enable_generation,
         "enable_ragas": bool(args.enable_ragas),
         "ragas_metrics": ragas_metrics,
+        "ragas_workers": int(args.ragas_workers),
+        "ragas_cache": str(ragas_cache_path) if ragas_cache_path else None,
+        "ragas_cache_namespace": ragas_cache_namespace if ragas_cache_path else None,
         "max_context_chars": args.max_context_chars,
         "filters": {
             "question_types": list(args.question_types or []),
@@ -957,6 +1203,10 @@ def run_enterprise_rag_eval(
             answer_generator=answer_generator,
             ragas_evaluator=ragas_evaluator,
             max_context_chars=args.max_context_chars,
+            ragas_workers=args.ragas_workers,
+            ragas_cache=ragas_cache,
+            ragas_metrics=ragas_metrics,
+            ragas_cache_namespace=ragas_cache_namespace,
         )
     report["total_elapsed_ms"] = round((time.monotonic() - total_t0) * 1000.0, 1)
 
