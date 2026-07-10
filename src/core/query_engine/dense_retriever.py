@@ -11,6 +11,8 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.core.types import RetrievalResult
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
@@ -103,6 +105,7 @@ class DenseRetriever:
         top_k: Optional[int] = None,
         filters: Optional[Dict[str, Any]] = None,
         trace: Optional[Any] = None,
+        request_context: Optional[RequestContext] = None,
     ) -> List[RetrievalResult]:
         """Retrieve semantically similar chunks for a query.
         
@@ -132,6 +135,9 @@ class DenseRetriever:
         
         # Use default top_k if not specified
         effective_top_k = top_k if top_k is not None else self.default_top_k
+        if request_context is not None:
+            filters = dict(filters or {})
+            filters.update(ACLFilter.native_filters(request_context))
         
         logger.debug(f"Retrieving for query='{query[:50]}...', top_k={effective_top_k}")
         
@@ -161,6 +167,8 @@ class DenseRetriever:
         
         # Step 3: Transform to RetrievalResult objects
         results = self._transform_results(raw_results)
+        if request_context is not None:
+            results = ACLFilter().filter_results(results, request_context).results
         
         logger.debug(f"Retrieved {len(results)} results for query")
         return results

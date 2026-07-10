@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from src.core.types import ProcessedQuery, RetrievalResult
 from src.observability.redaction import redact_text
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext
 
 if TYPE_CHECKING:
     from src.core.query_engine.dense_retriever import DenseRetriever
@@ -208,6 +210,7 @@ class HybridSearch:
         filters: Optional[Dict[str, Any]] = None,
         trace: Optional[Any] = None,
         return_details: bool = False,
+        request_context: Optional[RequestContext] = None,
     ) -> List[RetrievalResult] | HybridSearchResult:
         """Perform hybrid search combining Dense and Sparse retrieval.
         
@@ -252,6 +255,10 @@ class HybridSearch:
         
         # Merge explicit filters with query-extracted filters
         merged_filters = self._merge_filters(processed_query.filters, filters)
+        if request_context is not None:
+            # Enforce the tenant boundary even when HybridSearch is called
+            # directly rather than through query_knowledge_hub.
+            merged_filters.update(ACLFilter.native_filters(request_context))
         
         # Step 2: Run retrievals
         dense_results, sparse_results, dense_error, sparse_error = self._run_retrievals(
@@ -259,6 +266,29 @@ class HybridSearch:
             filters=merged_filters,
             trace=trace,
         )
+
+        # Tenant is applied in the dense backend where supported; user/role/
+        # department ACLs are enforced here before fusion and reranking.
+        if request_context is not None:
+            acl_filter = ACLFilter()
+            dense_acl = acl_filter.filter_results(
+                dense_results or [], request_context, overfetch_limit=self.config.dense_top_k
+            )
+            sparse_acl = acl_filter.filter_results(
+                sparse_results or [], request_context, overfetch_limit=self.config.sparse_top_k
+            )
+            dense_results = dense_acl.results
+            sparse_results = sparse_acl.results
+            if trace is not None:
+                trace.record_stage("acl_filter", {
+                    "method": "tenant_pre_filter_plus_acl_post_filter",
+                    "dense_input": dense_acl.input_count,
+                    "dense_allowed": dense_acl.filtered_count,
+                    "sparse_input": sparse_acl.input_count,
+                    "sparse_allowed": sparse_acl.filtered_count,
+                    "post_filter": True,
+                    "potential_recall_loss": dense_acl.potential_recall_loss or sparse_acl.potential_recall_loss,
+                })
         
         # Step 3: Handle fallback scenarios
         used_fallback = False
@@ -559,12 +589,23 @@ class HybridSearch:
             collection = filters.get('collection') if filters else None
             
             _t0 = time.monotonic()
-            results = self.sparse_retriever.retrieve(
-                keywords=keywords,
-                top_k=self.config.sparse_top_k,
-                collection=collection,
-                trace=trace,
-            )
+            try:
+                results = self.sparse_retriever.retrieve(
+                    keywords=keywords,
+                    top_k=self.config.sparse_top_k,
+                    collection=collection,
+                    trace=trace,
+                    filters=filters,
+                )
+            except TypeError as exc:
+                if "filter" not in str(exc).lower() and "unexpected keyword" not in str(exc).lower():
+                    raise
+                results = self.sparse_retriever.retrieve(
+                    keywords=keywords,
+                    top_k=self.config.sparse_top_k,
+                    collection=collection,
+                    trace=trace,
+                )
             _elapsed = (time.monotonic() - _t0) * 1000.0
             if trace is not None:
                 trace.record_stage("sparse_retrieval", {

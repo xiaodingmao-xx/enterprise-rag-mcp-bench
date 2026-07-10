@@ -11,6 +11,8 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.core.types import RetrievalResult
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
@@ -105,6 +107,8 @@ class SparseRetriever:
         top_k: Optional[int] = None,
         collection: Optional[str] = None,
         trace: Optional[Any] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        request_context: Optional[RequestContext] = None,
     ) -> List[RetrievalResult]:
         """Retrieve chunks matching the given keywords using BM25.
         
@@ -135,6 +139,9 @@ class SparseRetriever:
         # Use defaults if not specified
         effective_top_k = top_k if top_k is not None else self.default_top_k
         effective_collection = collection if collection is not None else self.default_collection
+        if request_context is not None:
+            filters = dict(filters or {})
+            filters.update(ACLFilter.native_filters(request_context))
         
         logger.debug(
             f"Retrieving for keywords={keywords[:5]}{'...' if len(keywords) > 5 else ''}, "
@@ -182,7 +189,20 @@ class SparseRetriever:
         
         # Step 4: Merge BM25 scores with text/metadata
         results = self._merge_results(bm25_results, records)
-        
+
+        # BM25 indexes do not expose a portable metadata where clause. Apply
+        # the tenant boundary immediately after metadata hydration, before
+        # fusion/reranking; complete user/role ACL is enforced by HybridSearch.
+        tenant_id = filters.get("tenant_id") if isinstance(filters, dict) else None
+        if tenant_id:
+            results = [
+                result for result in results
+                if not result.metadata.get("tenant_id")
+                or str(result.metadata.get("tenant_id")) == str(tenant_id)
+            ]
+        if request_context is not None:
+            results = ACLFilter().filter_results(results, request_context).results
+
         logger.debug(f"Retrieved {len(results)} results for keywords")
         return results
     

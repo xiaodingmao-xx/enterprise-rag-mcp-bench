@@ -26,6 +26,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from src.observability.audit import AuditLogger
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext, resolve_request_context
+from src.security.policy import ACLPolicy
+
 
 # Tool metadata
 TOOL_NAME = "get_document_summary"
@@ -115,6 +120,10 @@ class DocumentNotFoundError(Exception):
         if collection:
             message += f" in collection '{collection}'"
         super().__init__(message)
+
+
+class DocumentAccessDeniedError(DocumentNotFoundError):
+    """Use not-found semantics while retaining an audit permission signal."""
 
 
 class GetDocumentSummaryTool:
@@ -317,6 +326,7 @@ class GetDocumentSummaryTool:
         self,
         doc_id: str,
         collection: Optional[str] = None,
+        context: Optional[RequestContext] = None,
     ) -> DocumentSummary:
         """Get summary for a specific document.
         
@@ -334,6 +344,14 @@ class GetDocumentSummaryTool:
         
         if not chunks:
             raise DocumentNotFoundError(doc_id, collection)
+
+        if context is not None:
+            security_enabled = bool(getattr(getattr(self.settings, "security", None), "enabled", True))
+            chunks = ACLFilter(ACLPolicy(enabled=security_enabled)).filter_records(chunks, context).results
+            if not chunks:
+                # Do not reveal whether the document exists to an unauthorized
+                # caller; use the same response as a missing document.
+                raise DocumentAccessDeniedError(doc_id, collection)
         
         # Sort chunks by chunk_index if available
         chunks.sort(key=lambda c: c.get('metadata', {}).get('chunk_index', 0))
@@ -561,6 +579,8 @@ class GetDocumentSummaryTool:
         self,
         doc_id: str,
         collection: Optional[str] = None,
+        context: Optional[RequestContext] = None,
+        authorization: Optional[str] = None,
     ) -> types.CallToolResult:
         """Execute the get_document_summary tool.
         
@@ -572,14 +592,20 @@ class GetDocumentSummaryTool:
             CallToolResult with formatted document summary or error.
         """
         logger.info(f"Executing get_document_summary (doc_id={doc_id}, collection={collection})")
+        request_context = resolve_request_context(
+            self.settings,
+            context=context,
+            authorization=authorization,
+        )
         
         try:
             # Run blocking ChromaDB I/O in a thread to avoid blocking
             # the async event loop / MCP stdio transport
             summary = await asyncio.to_thread(
-                self.get_document_summary, doc_id, collection,
+                self.get_document_summary, doc_id, collection, request_context,
             )
             response_text = self.format_response(summary)
+            self._write_audit(request_context, doc_id, collection, success=True)
             
             return types.CallToolResult(
                 content=[
@@ -591,8 +617,24 @@ class GetDocumentSummaryTool:
                 isError=False,
             )
             
+        except DocumentAccessDeniedError as e:
+            logger.warning("Document access denied: %s", e)
+            self._write_audit(
+                request_context,
+                doc_id,
+                collection,
+                success=False,
+                permission_denied=True,
+                error_code="PERMISSION_DENIED",
+            )
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=self.format_error(e))],
+                isError=True,
+            )
+
         except DocumentNotFoundError as e:
             logger.warning(f"Document not found: {e}")
+            self._write_audit(request_context, doc_id, collection, success=False, error_code="DOCUMENT_NOT_FOUND")
             return types.CallToolResult(
                 content=[
                     types.TextContent(
@@ -605,6 +647,7 @@ class GetDocumentSummaryTool:
             
         except Exception as e:
             logger.exception("Error executing get_document_summary")
+            self._write_audit(request_context, doc_id, collection, success=False, error_code="SUMMARY_FAILED")
             return types.CallToolResult(
                 content=[
                     types.TextContent(
@@ -614,6 +657,33 @@ class GetDocumentSummaryTool:
                 ],
                 isError=True,
             )
+
+    def _write_audit(
+        self,
+        context: RequestContext,
+        doc_id: str,
+        collection: Optional[str],
+        *,
+        success: bool,
+        permission_denied: bool = False,
+        error_code: Optional[str] = None,
+    ) -> None:
+        try:
+            AuditLogger(settings=self.settings).write(
+                trace_id=context.trace_id,
+                request_id=context.request_id,
+                tenant_id=str(context.tenant_id or ""),
+                user_id=context.user_id,
+                operation="get_document_summary",
+                resource=collection or self.config.default_collection,
+                tool=TOOL_NAME,
+                document_ids=[doc_id] if success else [],
+                permission_denied=permission_denied,
+                success=success,
+                error_code=error_code,
+            )
+        except OSError:
+            logger.error("Failed to write get_document_summary audit event")
 
 
 def register_tool(protocol_handler: ProtocolHandler) -> None:
@@ -630,9 +700,16 @@ def register_tool(protocol_handler: ProtocolHandler) -> None:
     async def handler(
         doc_id: str,
         collection: Optional[str] = None,
+        context: Optional[RequestContext] = None,
+        authorization: Optional[str] = None,
     ) -> types.CallToolResult:
         """Handler function for MCP tool calls."""
-        return await tool.execute(doc_id=doc_id, collection=collection)
+        return await tool.execute(
+            doc_id=doc_id,
+            collection=collection,
+            context=context,
+            authorization=authorization,
+        )
     
     protocol_handler.register_tool(
         name=TOOL_NAME,

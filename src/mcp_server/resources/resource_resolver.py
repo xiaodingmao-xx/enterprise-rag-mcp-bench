@@ -17,6 +17,9 @@ from src.mcp_server.resources.document_resource import (
 )
 from src.mcp_server.resources.resource_uri import ResourceUriError, parse_resource_uri
 from src.mcp_server.tools.list_collections import ListCollectionsTool
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext, resolve_request_context
+from src.security.policy import ACLPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -52,16 +55,23 @@ class ResourceResolver:
         collection_limit: int = 100,
         documents_per_collection: int = 0,
         scan_limit: int = 5000,
+        request_context: RequestContext | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         self.collection_limit = collection_limit
         self.documents_per_collection = documents_per_collection
         self.scan_limit = scan_limit
+        self.request_context = request_context
 
-    def list_resource_descriptors(self) -> list[ResourceDescriptor]:
+    def _acl_policy(self) -> ACLPolicy:
+        security_enabled = bool(getattr(getattr(self.settings, "security", None), "enabled", True))
+        return ACLPolicy(enabled=security_enabled)
+
+    def list_resource_descriptors(self, context: RequestContext | None = None) -> list[ResourceDescriptor]:
         """List collection and a capped set of document resources."""
+        request_context = self._resolve_context(context)
         descriptors: list[ResourceDescriptor] = []
-        for collection_name in self._list_collection_names()[: self.collection_limit]:
+        for collection_name in self._list_collection_names(request_context)[: self.collection_limit]:
             descriptors.append(
                 ResourceDescriptor(
                     uri=_collection_uri(collection_name),
@@ -73,7 +83,7 @@ class ResourceResolver:
                 continue
 
             try:
-                records = self._list_records(collection_name, limit=self.scan_limit)
+                records = self._list_records(collection_name, limit=self.scan_limit, context=request_context)
             except Exception:
                 logger.exception("Failed to list document resources for collection %s", collection_name)
                 continue
@@ -96,26 +106,27 @@ class ResourceResolver:
 
         return descriptors
 
-    def read_resource(self, uri: str) -> dict[str, Any]:
+    def read_resource(self, uri: str, context: RequestContext | None = None) -> dict[str, Any]:
         """Read a resource payload by URI or raise ResourceResolutionError."""
+        request_context = self._resolve_context(context)
         try:
             parsed = parse_resource_uri(uri)
         except ResourceUriError as exc:
             raise ResourceResolutionError("INVALID_RESOURCE_URI", str(exc)) from exc
 
         if parsed.resource_type == "collection":
-            return self._read_collection(parsed.collection_name)
+            return self._read_collection(parsed.collection_name, request_context)
         if parsed.resource_type == "document":
             assert parsed.document_id is not None
-            return self._read_document(parsed.collection_name, parsed.document_id)
+            return self._read_document(parsed.collection_name, parsed.document_id, request_context)
         if parsed.resource_type == "chunk":
             assert parsed.chunk_id is not None
-            return self._read_chunk(parsed.collection_name, parsed.chunk_id)
+            return self._read_chunk(parsed.collection_name, parsed.chunk_id, request_context)
 
         raise ResourceResolutionError("INVALID_RESOURCE_URI", "Unsupported resource type")
 
-    def _read_collection(self, collection_name: str) -> dict[str, Any]:
-        self._ensure_collection_exists(collection_name)
+    def _read_collection(self, collection_name: str, context: RequestContext) -> dict[str, Any]:
+        self._ensure_collection_exists(collection_name, context)
         store = self._create_store(collection_name)
         try:
             chunk_count = store.collection.count()
@@ -129,18 +140,21 @@ class ResourceResolver:
                 if chunk_count
                 else []
             )
+            records = ACLFilter(self._acl_policy()).filter_records(records, context).results
+            if not records:
+                raise ResourceResolutionError("ACCESS_DENIED", "Collection is not accessible")
             return build_collection_payload(
                 collection_name=collection_name,
-                chunk_count=chunk_count,
+                chunk_count=len(records),
                 records=records,
                 sampled=chunk_count > len(records),
             )
         finally:
             store.close()
 
-    def _read_document(self, collection_name: str, document_id: str) -> dict[str, Any]:
-        self._ensure_collection_exists(collection_name)
-        records = self._list_records(collection_name, limit=self.scan_limit)
+    def _read_document(self, collection_name: str, document_id: str, context: RequestContext) -> dict[str, Any]:
+        self._ensure_collection_exists(collection_name, context)
+        records = self._list_records(collection_name, limit=self.scan_limit, context=context)
         document_records = [
             record for record in records if derive_document_id(record) == document_id
         ]
@@ -151,8 +165,8 @@ class ResourceResolver:
             )
         return build_document_payload(collection_name, document_id, document_records)
 
-    def _read_chunk(self, collection_name: str, chunk_id: str) -> dict[str, Any]:
-        self._ensure_collection_exists(collection_name)
+    def _read_chunk(self, collection_name: str, chunk_id: str, context: RequestContext) -> dict[str, Any]:
+        self._ensure_collection_exists(collection_name, context)
         store = self._create_store(collection_name)
         try:
             records = store.get_by_ids([chunk_id])
@@ -165,37 +179,49 @@ class ResourceResolver:
                 "CHUNK_NOT_FOUND",
                 f"Chunk resource not found: {_chunk_uri(collection_name, chunk_id)}",
             )
+        if not self._acl_policy().can_access(record.get("metadata", {}), context):
+            raise ResourceResolutionError("CHUNK_NOT_FOUND", "Chunk resource not found")
         return build_chunk_payload(collection_name, record)
 
-    def _list_collection_names(self) -> list[str]:
+    def _list_collection_names(self, context: RequestContext | None = None) -> list[str]:
         tool = ListCollectionsTool(settings=self.settings)
-        return [info.name for info in tool.list_collections(include_stats=False)]
+        return [info.name for info in tool.list_collections(include_stats=False, context=context)]
 
-    def _ensure_collection_exists(self, collection_name: str) -> None:
-        if collection_name not in set(self._list_collection_names()):
+    def _ensure_collection_exists(self, collection_name: str, context: RequestContext | None = None) -> None:
+        if collection_name not in set(self._list_collection_names(context)):
             raise ResourceResolutionError(
                 "COLLECTION_NOT_FOUND",
                 f"Collection resource not found: {_collection_uri(collection_name)}",
             )
 
-    def _list_records(self, collection_name: str, limit: int) -> list[dict[str, Any]]:
-        self._ensure_collection_exists(collection_name)
+    def _list_records(self, collection_name: str, limit: int, context: RequestContext | None = None) -> list[dict[str, Any]]:
+        self._ensure_collection_exists(collection_name, context)
         store = self._create_store(collection_name)
         try:
             count = store.collection.count()
             if count <= 0:
                 return []
-            return self._records_from_collection_get(
-                store.collection.get(
-                    limit=min(count, limit),
-                    include=["metadatas", "documents"],
-                )
-            )
+            kwargs: dict[str, Any] = {
+                "limit": min(count, limit),
+                "include": ["metadatas", "documents"],
+            }
+            if context is not None and context.auth_source != "local-dev":
+                native = ACLFilter.native_filters(context)
+                if native:
+                    kwargs["where"] = native
+            records = self._records_from_collection_get(store.collection.get(**kwargs))
+            return ACLFilter(self._acl_policy()).filter_records(records, context).results if context else records
         finally:
             store.close()
 
     def _create_store(self, collection_name: str) -> ChromaStore:
         return ChromaStore(settings=self.settings, collection_name=collection_name)
+
+    def _resolve_context(self, context: RequestContext | None) -> RequestContext:
+        return resolve_request_context(
+            self.settings,
+            context=context or self.request_context,
+        )
 
     @staticmethod
     def _records_from_collection_get(results: dict[str, Any]) -> list[dict[str, Any]]:

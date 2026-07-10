@@ -104,6 +104,20 @@ observability:
     max_file_size_mb: 100
     rotation_count: 5
 
+security:
+  enabled: true
+  mode: "local-dev"
+  require_tenant: false
+  require_authentication: false
+  default_local_tenant: "local"
+  default_local_user: "local-user"
+  jwt:
+    issuer: "${JWT_ISSUER:-}"
+    audience: "${JWT_AUDIENCE:-}"
+    secret: "${JWT_SECRET:-}"
+  acl:
+    enabled: true
+
 performance:
   query_cache:
     enabled: true

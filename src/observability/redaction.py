@@ -19,7 +19,7 @@ TRUNCATED = "… [truncated]"
 
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _PHONE_RE = re.compile(
-    r"(?<!\d)(?:\+?86[\s-]?)?1[3-9]\d{9}(?!\d)|(?<!\d)\+?\d[\d\s-]{7,}\d(?!\d)"
+    r"(?<!\d)(?:\+?86[\s-]?)?1[3-9]\d{9}(?!\d)|\b\+?\d{3}[- ]\d{3}[- ]\d{4}\b"
 )
 _CN_ID_RE = re.compile(r"(?<!\d)(?:\d{17}[\dXx]|\d{15})(?!\d)")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")

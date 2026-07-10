@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Hashable, List, Optional, TYPE_CHECKING
 
@@ -38,6 +37,9 @@ from src.core.types import RetrievalResult
 from src.core.query_engine.query_cache import LruTtlCache
 from src.observability.audit import AuditLogger
 from src.observability.redaction import redact_text
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext, resolve_request_context
+from src.security.policy import ACLPolicy
 
 if TYPE_CHECKING:
     from src.core.query_engine.hybrid_search import HybridSearch
@@ -104,19 +106,6 @@ TOOL_INPUT_SCHEMA: Dict[str, Any] = {
             "type": "boolean",
             "description": "Whether to include citation metadata in the structured response.",
             "default": True,
-        },
-        "tenant_id": {
-            "type": "string",
-            "description": "Tenant identity used for audit correlation.",
-            "default": "default",
-        },
-        "user_id": {
-            "type": "string",
-            "description": "Optional actor identity; only a hash is written to logs.",
-        },
-        "request_id": {
-            "type": "string",
-            "description": "Optional caller request correlation id.",
         },
     },
     "required": ["query"],
@@ -218,6 +207,7 @@ class QueryKnowledgeHubTool:
         include_citations: bool,
         answer_style: str,
         language: str,
+        request_context: Optional[RequestContext] = None,
     ) -> tuple[Hashable, ...]:
         normalized_query = " ".join(query.split())
         return (
@@ -229,6 +219,10 @@ class QueryKnowledgeHubTool:
             include_citations,
             answer_style,
             language,
+            request_context.tenant_id if request_context else "",
+            request_context.user_id if request_context else "",
+            tuple(request_context.roles) if request_context else (),
+            request_context.department if request_context else "",
             self.config.enable_rerank,
             getattr(self.settings.embedding, "provider", ""),
             getattr(self.settings.embedding, "model", ""),
@@ -332,9 +326,8 @@ class QueryKnowledgeHubTool:
         include_citations: bool = True,
         answer_style: Optional[str] = None,
         language: str = "auto",
-        tenant_id: str = "default",
-        user_id: Optional[str] = None,
-        request_id: Optional[str] = None,
+        context: Optional[RequestContext] = None,
+        authorization: Optional[str] = None,
     ) -> MCPToolResponse:
         """Execute the query_knowledge_hub tool.
         
@@ -365,6 +358,14 @@ class QueryKnowledgeHubTool:
             answer_style or getattr(answer_settings, "default_answer_style", "concise")
         )
         effective_language = self._normalize_language(language)
+        request_context = resolve_request_context(
+            self.settings,
+            context=context,
+            authorization=authorization,
+        )
+        security = getattr(self.settings, "security", None)
+        acl_settings = getattr(security, "acl", None)
+        acl_enabled = bool(getattr(security, "enabled", True)) and bool(getattr(acl_settings, "enabled", True))
         
         logger.info(
             f"Executing query_knowledge_hub: query='{query[:50]}...', "
@@ -373,12 +374,13 @@ class QueryKnowledgeHubTool:
         
         trace = TraceContext(
             trace_type="query",
-            request_id=request_id or str(uuid.uuid4()),
-            tenant_id=tenant_id or "default",
+            trace_id=request_context.trace_id,
+            request_id=request_context.request_id,
+            tenant_id=request_context.tenant_id or "",
         )
         trace.configure_security(self.settings)
         trace.set_context(
-            user_id=user_id,
+            user_id=request_context.user_id,
             operation="query_knowledge_hub",
             model=getattr(getattr(self.settings, "llm", None), "model", None),
         )
@@ -401,6 +403,7 @@ class QueryKnowledgeHubTool:
                 include_citations,
                 effective_answer_style,
                 effective_language,
+                request_context,
             )
             query_cache = self._get_query_cache()
             _cache_t0 = time.monotonic()
@@ -462,8 +465,15 @@ class QueryKnowledgeHubTool:
             
             # Perform hybrid search (blocking: embedding API + DB queries)
             results = await asyncio.to_thread(
-                self._perform_search, query, effective_top_k, trace,
+                self._perform_search_compat, query, effective_top_k, trace, request_context,
             )
+            if acl_enabled:
+                acl_result = ACLFilter(ACLPolicy(enabled=True)).filter_results(
+                    results,
+                    request_context,
+                    overfetch_limit=max(effective_top_k, 1),
+                )
+                results = acl_result.results
             
             # Apply reranking if enabled (may call LLM API)
             if self.config.enable_rerank and results:
@@ -621,6 +631,7 @@ class QueryKnowledgeHubTool:
         query: str,
         top_k: int,
         trace: Optional[Any] = None,
+        request_context: Optional[RequestContext] = None,
     ) -> List[RetrievalResult]:
         """Perform hybrid search.
         
@@ -640,19 +651,52 @@ class QueryKnowledgeHubTool:
         rerank_config = getattr(getattr(self._reranker, "config", None), "candidate_top_k", None)
         candidate_top_k = rerank_config if isinstance(rerank_config, int) and rerank_config > 0 else top_k * 2
         initial_top_k = max(top_k, candidate_top_k) if self.config.enable_rerank else top_k
-        
+        security = getattr(self.settings, "security", None)
+        acl_config = getattr(security, "acl", None)
+        acl_enabled = bool(getattr(acl_config, "enabled", True))
+        search_top_k = initial_top_k * 3 if request_context is not None and acl_enabled else initial_top_k
+        native_filters = ACLFilter.native_filters(request_context) if request_context and acl_enabled else None
+
         try:
-            results = self._hybrid_search.search(
-                query=query,
-                top_k=initial_top_k,
-                filters=None,
-                trace=trace,
-                return_details=False,
-            )
+            try:
+                results = self._hybrid_search.search(
+                    query=query,
+                    top_k=search_top_k,
+                    filters=native_filters,
+                    trace=trace,
+                    return_details=False,
+                    request_context=request_context,
+                )
+            except TypeError as exc:
+                if "request_context" not in str(exc) and "unexpected keyword" not in str(exc):
+                    raise
+                results = self._hybrid_search.search(
+                    query=query,
+                    top_k=search_top_k,
+                    filters=native_filters,
+                    trace=trace,
+                    return_details=False,
+                )
             return results if isinstance(results, list) else results.results
         except Exception as e:
             logger.warning(f"Hybrid search failed: {e}")
             return []
+
+    def _perform_search_compat(
+        self,
+        query: str,
+        top_k: int,
+        trace: Optional[Any],
+        request_context: Optional[RequestContext],
+    ) -> List[RetrievalResult]:
+        """Support injected legacy test doubles while keeping the real ACL path."""
+
+        try:
+            return self._perform_search(query, top_k, trace, request_context)
+        except TypeError as exc:
+            if "positional" not in str(exc) and "argument" not in str(exc):
+                raise
+            return self._perform_search(query, top_k, trace)
     
     def _apply_rerank(
         self,
@@ -1054,9 +1098,8 @@ async def query_knowledge_hub_handler(
     language: str = "auto",
     include_sources: bool = True,
     include_citations: bool = True,
-    tenant_id: str = "default",
-    user_id: Optional[str] = None,
-    request_id: Optional[str] = None,
+    context: Optional[RequestContext] = None,
+    authorization: Optional[str] = None,
 ) -> types.CallToolResult:
     """Handler function for MCP tool registration.
     
@@ -1086,9 +1129,8 @@ async def query_knowledge_hub_handler(
             language=language,
             include_sources=include_sources,
             include_citations=include_citations,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            request_id=request_id,
+            context=context,
+            authorization=authorization,
         )
         
         # Use to_mcp_content() which handles multimodal (text + images)

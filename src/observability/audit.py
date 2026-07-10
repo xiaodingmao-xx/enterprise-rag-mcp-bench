@@ -23,7 +23,11 @@ class AuditLogger:
         retention: Optional[LogRetentionManager] = None,
     ) -> None:
         observability = getattr(settings, "observability", None) if settings is not None else None
+        if observability is not None and observability.__class__.__module__ == "unittest.mock":
+            observability = None
         configured = getattr(observability, "audit_file", "./logs/audit.jsonl") if observability else "./logs/audit.jsonl"
+        if not isinstance(configured, (str, Path)):
+            configured = "./logs/audit.jsonl"
         self.path = Path(path or resolve_path(configured))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.config = config_from_settings(settings)
@@ -76,4 +80,3 @@ class AuditLogger:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         return event
-

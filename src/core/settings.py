@@ -271,6 +271,30 @@ class RetentionSettings:
 
 
 @dataclass(frozen=True)
+class JWTSettings:
+    issuer: str = ""
+    audience: str = ""
+    secret: str = ""
+
+
+@dataclass(frozen=True)
+class ACLSettings:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class SecuritySettings:
+    enabled: bool = True
+    mode: str = "local-dev"
+    require_tenant: bool = False
+    require_authentication: bool = False
+    default_local_tenant: str = "local"
+    default_local_user: str = "local-user"
+    jwt: JWTSettings = field(default_factory=JWTSettings)
+    acl: ACLSettings = field(default_factory=ACLSettings)
+
+
+@dataclass(frozen=True)
 class ObservabilitySettings:
     log_level: str
     trace_enabled: bool
@@ -380,6 +404,7 @@ class Settings:
     rerank: RerankSettings
     evaluation: EvaluationSettings
     observability: ObservabilitySettings
+    security: SecuritySettings = field(default_factory=SecuritySettings)
     ingestion: Optional[IngestionSettings] = None
     vision_llm: Optional[VisionLLMSettings] = None
     performance: PerformanceSettings = field(default_factory=PerformanceSettings)
@@ -589,6 +614,24 @@ class Settings:
             environment=observability_settings.environment,
         )
 
+        security_data = _optional_mapping(data.get("security"))
+        security_jwt = _optional_mapping(security_data.get("jwt"))
+        security_acl = _optional_mapping(security_data.get("acl"))
+        security_settings = SecuritySettings(
+            enabled=bool(security_data.get("enabled", True)),
+            mode=str(security_data.get("mode", "local-dev")).strip().lower(),
+            require_tenant=bool(security_data.get("require_tenant", False)),
+            require_authentication=bool(security_data.get("require_authentication", False)),
+            default_local_tenant=str(security_data.get("default_local_tenant", "local")),
+            default_local_user=str(security_data.get("default_local_user", "local-user")),
+            jwt=JWTSettings(
+                issuer=str(security_jwt.get("issuer", "")),
+                audience=str(security_jwt.get("audience", "")),
+                secret=str(security_jwt.get("secret", os.environ.get("JWT_SECRET", ""))),
+            ),
+            acl=ACLSettings(enabled=bool(security_acl.get("enabled", True))),
+        )
+
         settings = cls(
             llm=LLMSettings(
                 provider=_require_str(llm, "provider", "llm"),
@@ -715,6 +758,7 @@ class Settings:
                 metrics=[str(item) for item in _require_list(evaluation, "metrics", "evaluation")],
             ),
             observability=observability_settings,
+            security=security_settings,
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
             performance=performance_settings,
@@ -741,6 +785,19 @@ def validate_settings(settings: Settings) -> None:
         raise SettingsError("Missing required field: evaluation.provider")
     if not settings.observability.log_level:
         raise SettingsError("Missing required field: observability.log_level")
+    if settings.security.mode not in {"local-dev", "development", "production", "prod"}:
+        raise SettingsError("security.mode must be local-dev or production")
+    if settings.security.mode in {"production", "prod"}:
+        if not settings.security.enabled:
+            raise SettingsError("security.enabled=false is forbidden in production")
+        if not settings.security.require_tenant:
+            raise SettingsError("production mode requires security.require_tenant=true")
+        if not settings.security.require_authentication:
+            raise SettingsError("production mode requires security.require_authentication=true")
+        if not settings.observability.redaction.enabled:
+            raise SettingsError("production mode requires observability.redaction.enabled=true")
+        if settings.observability.trace.include_prompt:
+            raise SettingsError("production mode forbids observability.trace.include_prompt=true")
 
 
 def load_settings(path: str | Path | None = None) -> Settings:

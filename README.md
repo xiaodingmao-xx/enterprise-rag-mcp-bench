@@ -67,6 +67,36 @@
 
 ---
 
+## 🔐 多租户与企业文档 ACL
+
+项目现在提供统一的 `RequestContext` 和 `DocumentACL` 权限模型。每次请求都绑定 `request_id/trace_id/tenant_id/user_id/roles/department/auth_source`，工具参数不能覆盖可信身份：
+
+- `local-dev` 模式自动注入 `security.default_local_tenant` 与 `security.default_local_user`，便于本地单用户运行。
+- `production` 模式要求已验证 JWT/OIDC 上下文；缺少认证或 `tenant_id` 的请求默认拒绝。
+- 摄取时 ACL 从 Document 继承到所有 Chunk；Dense、BM25、Hybrid、Rerank、文档摘要、collection 列表和 MCP resources 均执行权限过滤。
+- Chroma Dense 使用原生 `tenant_id` metadata filter；BM25/SQLite FTS5 取回 metadata 后 post-filter；完整 ACL 在 Hybrid 融合和 Rerank 前完成。
+- 对 ACL post-filter 使用有限 over-fetch；如果后端返回上限导致候选被过滤，trace 会记录 `potential_recall_loss`。
+
+核心配置：
+
+```yaml
+security:
+  enabled: true
+  mode: local-dev                 # production requires verified JWT/OIDC
+  require_tenant: false
+  require_authentication: false
+  default_local_tenant: local
+  default_local_user: local-user
+  jwt:
+    issuer: "${JWT_ISSUER:-}"
+    audience: "${JWT_AUDIENCE:-}"
+    secret: "${JWT_SECRET:-}"
+  acl:
+    enabled: true
+```
+
+企业文档的安全观测也已分流：debug trace、operational log 和 audit log 分别写入不同 JSONL 文件；trace 默认只保留脱敏摘要，Dashboard 不默认展示完整文档原文。
+
 ## 📂 分支说明
 
 本项目提供三个分支，面向不同使用场景，请根据自身需求选择：

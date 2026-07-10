@@ -1095,6 +1095,33 @@ Hybrid Search 命中 Chunk（正文含 "[图片描述: 系统采用三层架构.
   - 当 Vision LLM 不可用时，系统回退到"仅保留图片占位符"模式，图片不参与检索但不阻塞 Ingestion 流程。
   - 在 Chunk 中标记 `has_unprocessed_images: true`，后续可增量补充描述。
 
+## 3.6 多租户、身份与文档 ACL 安全边界
+
+企业文档场景下，检索授权必须在召回链路中完成，不能只依赖提示词约束生成模型。当前实现的统一安全模型位于 `src/security/`：
+
+- `models.py`：`DocumentACL`，统一保存 `tenant_id`、`document_id`、`version_id`、`owner_id`、`acl_users`、`acl_roles`、`acl_visibility`、`acl_department`、来源系统及时间字段。
+- `context.py`：不可从全局变量读取用户身份的 `RequestContext`；`local-dev` 自动使用配置中的默认租户/用户，`production` 要求已验证 JWT/OIDC 上下文。
+- `policy.py`：执行 `private/users/roles/department/tenant/public` 六类可见性策略，先校验租户，再校验用户、角色或部门。
+- `acl_filter.py`：提供后端原生过滤条件和统一二次过滤结果。
+
+摄取阶段将文档 ACL 写入 Document metadata，并在 split/transform 后再次覆盖到每个 Chunk metadata，保证文档与 chunk 的 ACL 一致。查询、集合列表、文档摘要以及 MCP document/chunk resource resolver 都必须接收可信 `RequestContext`。
+
+### 检索后端过滤边界
+
+| 后端/阶段 | 过滤方式 | 说明 |
+|---|---|---|
+| Chroma Dense | 原生 metadata `tenant_id` equality filter | Chroma 当前稳定支持标量 metadata equality；用户/角色/部门 ACL 在结果进入融合前二次过滤 |
+| BM25 / SQLite FTS5 | 取回 chunk metadata 后 post-filter | 索引查询接口没有统一 ACL metadata where 能力，tenant/ACL 过滤发生在 metadata hydration 后 |
+| Hybrid/RRF | 融合前 post-filter | 过滤后的结果才允许进入融合，避免无权限候选影响排序 |
+| Rerank | 只接收已授权结果 | 无权限结果不会进入 LLM/Cross-Encoder rerank |
+| MCP resources / summary / collection list | 资源读取前 post-filter | 未授权资源按 not-found/empty 处理，避免泄露资源存在性 |
+
+查询会对召回数量进行有限 over-fetch（当前为请求候选数的 3 倍），降低 post-filter 造成的召回损失。若后端在 ACL 过滤前已经达到返回上限，仍可能存在候选被权限过滤后的潜在召回损失；该情况会在 trace 的 `acl_filter.potential_recall_loss` 中记录。只要所有新摄取文档带有正确的 tenant/ACL metadata，当前系统是真正按 tenant 隔离的；缺失 ACL metadata 的历史数据仅在 local-dev 兼容放行，production 默认拒绝。
+
+### 安全 Trace 与审计日志
+
+`logs/traces.jsonl` 只保存安全 debug trace，默认不保存完整文档、chunk、prompt 或 API Key；`logs/operational.jsonl` 保存低基数运行字段；`logs/audit.jsonl` 独立保存租户、用户 hash、工具、资源、document_id、权限拒绝和成功状态。`src/observability/redaction.py` 负责 PII/secret/path 脱敏，`TraceService.delete_trace()` 提供单条 debug trace 删除接口，retention 配置负责轮转和过期清理。Dashboard 只展示 `trace_id/stage/duration/status/error_code/document_id/chunk_id/redacted_preview`。
+
 ## 4. 测试方案
 
 ### 4.1 设计理念：测试驱动开发 (TDD)

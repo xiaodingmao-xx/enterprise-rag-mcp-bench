@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from src.security.acl_filter import ACLFilter
+from src.security.context import RequestContext, resolve_request_context
+from src.security.policy import ACLPolicy
+from src.observability.audit import AuditLogger
+
 
 # Tool metadata
 TOOL_NAME = "list_collections"
@@ -185,7 +190,8 @@ class ListCollectionsTool:
     
     def list_collections(
         self,
-        include_stats: bool = True
+        include_stats: bool = True,
+        context: Optional[RequestContext] = None,
     ) -> List[CollectionInfo]:
         """List all available collections.
         
@@ -202,6 +208,8 @@ class ListCollectionsTool:
             return []
         
         collections_info: List[CollectionInfo] = []
+        security_enabled = bool(getattr(getattr(self.settings, "security", None), "enabled", True))
+        acl_policy = ACLPolicy(enabled=security_enabled)
         
         try:
             # Get all collections from ChromaDB
@@ -215,13 +223,35 @@ class ListCollectionsTool:
                 
                 if include_stats:
                     try:
-                        info.count = collection.count()
+                        if context is None:
+                            info.count = collection.count()
+                        else:
+                            raw = collection.get(
+                                limit=min(collection.count(), 5000),
+                                include=["metadatas"],
+                            )
+                            records = [
+                                {"metadata": metadata or {}}
+                                for metadata in (raw.get("metadatas") or [])
+                            ]
+                            filtered = ACLFilter(acl_policy).filter_records(records, context)
+                            info.count = len(filtered.results)
+                            if not filtered.results:
+                                continue
                     except Exception as e:
                         logger.warning(
                             f"Failed to get count for collection '{collection.name}': {e}"
                         )
                         info.count = None
                 
+                if context is not None and not include_stats:
+                    raw = collection.get(
+                        limit=min(collection.count(), 5000),
+                        include=["metadatas"],
+                    )
+                    records = [{"metadata": metadata or {}} for metadata in (raw.get("metadatas") or [])]
+                    if not ACLFilter(acl_policy).filter_records(records, context).results:
+                        continue
                 collections_info.append(info)
                 
         except Exception as e:
@@ -273,6 +303,8 @@ class ListCollectionsTool:
     async def execute(
         self,
         include_stats: bool = True,
+        context: Optional[RequestContext] = None,
+        authorization: Optional[str] = None,
     ) -> types.CallToolResult:
         """Execute the list_collections tool.
         
@@ -283,15 +315,21 @@ class ListCollectionsTool:
             CallToolResult with formatted collection list.
         """
         logger.info(f"Executing list_collections (include_stats={include_stats})")
+        request_context = resolve_request_context(
+            self.settings,
+            context=context,
+            authorization=authorization,
+        )
         
         try:
             # Run blocking ChromaDB I/O in a thread to avoid blocking
             # the async event loop / MCP stdio transport
-            collections = await asyncio.to_thread(
-                self.list_collections,
-                include_stats=include_stats,
-            )
+            list_kwargs: Dict[str, Any] = {"include_stats": include_stats}
+            if context is not None or authorization is not None or self._config is None:
+                list_kwargs["context"] = request_context
+            collections = await asyncio.to_thread(self.list_collections, **list_kwargs)
             response_text = self.format_response(collections)
+            self._write_audit(request_context, success=True)
             
             return types.CallToolResult(
                 content=[
@@ -305,6 +343,7 @@ class ListCollectionsTool:
             
         except Exception as e:
             logger.exception("Error executing list_collections")
+            self._write_audit(request_context, success=False, error_code="LIST_COLLECTIONS_FAILED")
             return types.CallToolResult(
                 content=[
                     types.TextContent(
@@ -314,6 +353,29 @@ class ListCollectionsTool:
                 ],
                 isError=True,
             )
+
+    def _write_audit(
+        self,
+        context: RequestContext,
+        *,
+        success: bool,
+        error_code: Optional[str] = None,
+    ) -> None:
+        try:
+            AuditLogger(settings=self.settings).write(
+                trace_id=context.trace_id,
+                request_id=context.request_id,
+                tenant_id=str(context.tenant_id or ""),
+                user_id_hash=f"sha256:{context.user_id}" if context.user_id and context.user_id.startswith("sha256:") else None,
+                user_id=context.user_id,
+                operation="list_collections",
+                resource="collections",
+                tool=TOOL_NAME,
+                success=success,
+                error_code=error_code,
+            )
+        except OSError:
+            logger.error("Failed to write list_collections audit event")
 
 
 def register_tool(protocol_handler: ProtocolHandler) -> None:
@@ -329,9 +391,15 @@ def register_tool(protocol_handler: ProtocolHandler) -> None:
     
     async def handler(
         include_stats: bool = True,
+        context: Optional[RequestContext] = None,
+        authorization: Optional[str] = None,
     ) -> types.CallToolResult:
         """Handler function for MCP tool calls."""
-        return await tool.execute(include_stats=include_stats)
+        return await tool.execute(
+            include_stats=include_stats,
+            context=context,
+            authorization=authorization,
+        )
     
     protocol_handler.register_tool(
         name=TOOL_NAME,

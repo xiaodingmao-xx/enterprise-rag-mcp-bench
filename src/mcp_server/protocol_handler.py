@@ -17,6 +17,7 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 
 from src.mcp_server.resources import RagResourceRegistry
 from src.observability.logger import get_logger
+from src.security.context import AuthenticationError, RequestContext, resolve_request_context
 
 
 # JSON-RPC 2.0 Error Codes
@@ -58,6 +59,7 @@ class ProtocolHandler:
     server_name: str
     server_version: str
     tools: Dict[str, ToolDefinition] = field(default_factory=dict)
+    settings: Any = None
 
     def __post_init__(self) -> None:
         """Initialize logger after dataclass initialization."""
@@ -108,7 +110,11 @@ class ProtocolHandler:
         ]
 
     async def execute_tool(
-        self, name: str, arguments: Dict[str, Any]
+        self,
+        name: str,
+        arguments: Dict[str, Any],
+        *,
+        context: Optional[RequestContext] = None,
     ) -> types.CallToolResult:
         """Execute a registered tool by name.
 
@@ -137,7 +143,21 @@ class ProtocolHandler:
         tool = self.tools[name]
         try:
             self._logger.info("Executing tool: %s", name)
-            result = await tool.handler(**arguments)
+            security_tools = {"query_knowledge_hub", "list_collections", "get_document_summary"}
+            safe_arguments = dict(arguments or {})
+            # Identity-bearing tool arguments are never trusted. The context
+            # comes from the protocol/application boundary only.
+            for field_name in ("tenant_id", "user_id", "request_id", "trace_id", "context"):
+                safe_arguments.pop(field_name, None)
+            if name in security_tools:
+                authorization = safe_arguments.pop("authorization", None)
+                trusted_context = resolve_request_context(
+                    self.settings,
+                    context=context,
+                    authorization=authorization,
+                )
+                safe_arguments["context"] = trusted_context
+            result = await tool.handler(**safe_arguments)
 
             # Handle different return types
             if isinstance(result, types.CallToolResult):
@@ -239,6 +259,8 @@ def create_mcp_server(
         )
     if resource_registry is None:
         resource_registry = RagResourceRegistry()
+    if protocol_handler.settings is None:
+        protocol_handler.settings = getattr(resource_registry.resolver, "settings", None)
 
     # Register default tools for the normal server path. A caller-provided
     # handler may already contain a custom tool set for tests or embedding.
@@ -257,12 +279,27 @@ def create_mcp_server(
     @server.list_resources()
     async def handle_list_resources() -> List[types.Resource]:
         """Handle resources/list request."""
-        return resource_registry.list_resources()
+        try:
+            resource_settings = protocol_handler.settings or getattr(resource_registry.resolver, "settings", None)
+            context = resolve_request_context(resource_settings)
+            return resource_registry.list_resources(context=context)
+        except AuthenticationError:
+            return []
 
     @server.read_resource()
     async def handle_read_resource(uri: Any) -> List[ReadResourceContents]:
         """Handle resources/read request."""
-        return resource_registry.read_resource(str(uri))
+        try:
+            resource_settings = protocol_handler.settings or getattr(resource_registry.resolver, "settings", None)
+            context = resolve_request_context(resource_settings)
+            return resource_registry.read_resource(str(uri), context=context)
+        except AuthenticationError as exc:
+            return [
+                ReadResourceContents(
+                    content=f'{{"error_code":"AUTHENTICATION_REQUIRED","message":"{exc}"}}',
+                    mime_type="application/json",
+                )
+            ]
 
     # Register tools/call handler
     @server.call_tool()

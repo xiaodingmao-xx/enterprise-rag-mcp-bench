@@ -27,6 +27,8 @@ from src.core.types import Chunk
 from src.core.trace.trace_context import TraceContext
 from src.observability.logger import get_logger
 from src.observability.redaction import redact_text
+from src.security.context import RequestContext, resolve_request_context
+from src.security.models import DocumentACL
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
@@ -134,7 +136,8 @@ class IngestionPipeline:
         self,
         settings: Settings,
         collection: str = "default",
-        force: bool = False
+        force: bool = False,
+        request_context: Optional[RequestContext] = None,
     ):
         """Initialize pipeline with all components.
         
@@ -146,6 +149,7 @@ class IngestionPipeline:
         self.settings = settings
         self.collection = collection
         self.force = force
+        self.request_context = request_context
         
         # Initialize all components
         logger.info("Initializing Ingestion Pipeline components...")
@@ -420,6 +424,19 @@ class IngestionPipeline:
             trace.operation = "ingestion"
             trace.model = getattr(getattr(pipeline_settings, "llm", None), "model", None)
 
+        pipeline_settings = getattr(self, "settings", None)
+        request_context = resolve_request_context(
+            pipeline_settings,
+            context=getattr(self, "request_context", None),
+        )
+        if trace is not None:
+            trace.set_context(
+                request_id=request_context.request_id,
+                tenant_id=request_context.tenant_id,
+                user_id=request_context.user_id,
+                operation="ingestion",
+            )
+
         def _notify(stage_name: str, step: int) -> None:
             if on_progress is not None:
                 on_progress(stage_name, step, _total_stages)
@@ -557,6 +574,10 @@ class IngestionPipeline:
             logger.info(f"  Text length: {len(document.text)} chars")
             logger.info(f"  Images extracted: {image_count}")
             logger.info(f"  Preview: {text_preview[:100]}...")
+
+            build_acl_metadata = getattr(self, "_build_acl_metadata", IngestionPipeline._build_acl_metadata)
+            acl_metadata = build_acl_metadata(document, request_context, file_hash)
+            document.metadata.update(acl_metadata)
             
             stages["loading"] = {
                 "doc_id": document.id,
@@ -584,6 +605,13 @@ class IngestionPipeline:
             _t0 = time.monotonic()
             chunks = self.chunker.split_document(document)
             _elapsed = (time.monotonic() - _t0) * 1000.0
+
+            for chunk in chunks:
+                chunk.metadata.update(acl_metadata)
+                chunk.metadata["document_id"] = document.id
+                chunk.metadata["source_ref"] = document.id
+                chunk.doc_id = document.id
+                chunk.source_ref = document.id
             
             logger.info(f"  Chunks generated: {len(chunks)}")
             if chunks:
@@ -638,6 +666,15 @@ class IngestionPipeline:
             chunks = self.image_captioner.transform(chunks, trace)
             captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
             logger.info(f"      Chunks with captions: {captioned}")
+
+            # Defensive re-application covers transform error/fallback paths
+            # that construct a minimal Chunk metadata dictionary.
+            for chunk in chunks:
+                chunk.metadata.update(acl_metadata)
+                chunk.metadata["document_id"] = document.id
+                chunk.metadata["source_ref"] = document.id
+                chunk.doc_id = document.id
+                chunk.source_ref = document.id
             
             stages["transform"] = {
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
@@ -941,6 +978,32 @@ class IngestionPipeline:
                 stages=stages
             )
     
+    @staticmethod
+    def _build_acl_metadata(
+        document: Any,
+        request_context: RequestContext,
+        version_id: str,
+    ) -> Dict[str, Any]:
+        """Create canonical ACL metadata from trusted context and document hints."""
+
+        source_metadata = getattr(document, "metadata", {})
+        if not isinstance(source_metadata, dict):
+            source_metadata = {}
+        acl = DocumentACL(
+            tenant_id=str(request_context.tenant_id or ""),
+            document_id=str(getattr(document, "id", "")),
+            version_id=str(source_metadata.get("version_id") or version_id),
+            owner_id=str(source_metadata.get("owner_id") or request_context.user_id or ""),
+            allowed_users=source_metadata.get("acl_users", []),
+            allowed_roles=source_metadata.get("acl_roles", []),
+            visibility=str(source_metadata.get("acl_visibility", "tenant")),
+            source_system=str(source_metadata.get("source_system", "local")),
+            department=str(source_metadata.get("acl_department", request_context.department or "")),
+            created_at=str(source_metadata.get("created_at") or ""),
+            updated_at=str(source_metadata.get("updated_at") or ""),
+        )
+        return acl.to_metadata()
+
     def close(self) -> None:
         """Clean up resources."""
         self.image_storage.close()

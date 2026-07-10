@@ -12,6 +12,7 @@ from src.mcp_server.resources.resource_resolver import (
     ResourceResolutionError,
     ResourceResolver,
 )
+from src.security.context import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,9 @@ class RagResourceRegistry:
     def __init__(self, resolver: ResourceResolver | None = None) -> None:
         self.resolver = resolver or ResourceResolver()
 
-    def list_resources(self) -> list[types.Resource]:
+    def list_resources(self, context: RequestContext | None = None) -> list[types.Resource]:
         try:
-            descriptors = self.resolver.list_resource_descriptors()
+            descriptors = self.resolver.list_resource_descriptors(context=context)
         except Exception:
             logger.exception("Failed to list MCP resources")
             return []
@@ -39,9 +40,9 @@ class RagResourceRegistry:
             for descriptor in descriptors
         ]
 
-    def read_resource(self, uri: str) -> list[ReadResourceContents]:
+    def read_resource(self, uri: str, context: RequestContext | None = None) -> list[ReadResourceContents]:
         try:
-            payload = self.resolver.read_resource(uri)
+            payload = self.resolver.read_resource(uri, context=context)
         except ResourceResolutionError as exc:
             payload = exc.to_payload()
         except Exception:
