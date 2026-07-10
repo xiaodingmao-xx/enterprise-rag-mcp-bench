@@ -13,11 +13,13 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from src.core.settings import resolve_path
+from src.observability.retention import LogRetentionManager
 
 logger = logging.getLogger(__name__)
 
 # Default path to the traces file (absolute, CWD-independent)
 DEFAULT_TRACES_PATH = resolve_path("logs/traces.jsonl")
+DEFAULT_AUDIT_PATH = resolve_path("logs/audit.jsonl")
 CHINA_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -29,8 +31,13 @@ class TraceService:
             ``logs/traces.jsonl``.
     """
 
-    def __init__(self, traces_path: Optional[str | Path] = None) -> None:
+    def __init__(
+        self,
+        traces_path: Optional[str | Path] = None,
+        audit_path: Optional[str | Path] = None,
+    ) -> None:
         self.traces_path = Path(traces_path) if traces_path else DEFAULT_TRACES_PATH
+        self.audit_path = Path(audit_path) if audit_path else DEFAULT_AUDIT_PATH
 
     # ------------------------------------------------------------------
     # Public API
@@ -71,6 +78,69 @@ class TraceService:
             if t.get("trace_id") == trace_id:
                 return t
         return None
+
+    def delete_trace(self, trace_id: str) -> bool:
+        """Delete one debug trace record by id; audit records remain untouched."""
+
+        return LogRetentionManager().delete_trace(self.traces_path, trace_id)
+
+    def list_audit_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Read audit events from the separated audit stream."""
+
+        records = self._load_jsonl(self.audit_path)
+        records.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+        return records[:limit]
+
+    def trace_rows(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Flatten safe trace data into Dashboard rows without raw document text."""
+
+        rows: List[Dict[str, Any]] = []
+        for trace in self.list_traces(limit=limit):
+            base = {
+                "trace_id": trace.get("trace_id", ""),
+                "status": trace.get("status", ""),
+                "error_code": trace.get("error_code"),
+                "duration": trace.get("latency_ms", trace.get("total_elapsed_ms", 0)),
+            }
+            metadata = trace.get("metadata", {}) if isinstance(trace.get("metadata"), dict) else {}
+            default_document_id = metadata.get("document_id") or metadata.get("doc_id")
+            emitted = False
+            for stage in trace.get("stages", []) or []:
+                stage_name = stage.get("stage", "")
+                stage_data = stage.get("data", {}) if isinstance(stage.get("data"), dict) else {}
+                chunks = stage_data.get("chunks") if isinstance(stage_data.get("chunks"), list) else []
+                stage_document_id = stage_data.get("document_id") or stage_data.get("doc_id") or default_document_id
+                if chunks:
+                    for chunk in chunks:
+                        if not isinstance(chunk, dict):
+                            continue
+                        rows.append({
+                            **base,
+                            "stage": stage_name,
+                            "duration": stage.get("elapsed_ms", base["duration"]),
+                            "document_id": chunk.get("document_id") or stage_document_id or "",
+                            "chunk_id": chunk.get("chunk_id", ""),
+                            "redacted_preview": (
+                                chunk.get("redacted_preview")
+                                or chunk.get("text_before_preview")
+                                or chunk.get("text_after_preview")
+                                or ""
+                            ),
+                        })
+                        emitted = True
+                if not chunks:
+                    rows.append({
+                        **base,
+                        "stage": stage_name,
+                        "duration": stage.get("elapsed_ms", base["duration"]),
+                        "document_id": stage_document_id or "",
+                        "chunk_id": stage_data.get("chunk_id", ""),
+                        "redacted_preview": stage_data.get("redacted_preview", ""),
+                    })
+                    emitted = True
+            if not emitted:
+                rows.append({**base, "stage": trace.get("operation", ""), "document_id": default_document_id or "", "chunk_id": "", "redacted_preview": ""})
+        return rows[:limit]
 
     def get_stage_timings(self, trace: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract stage timings from a trace.
@@ -135,14 +205,20 @@ class TraceService:
         if not self.traces_path.exists():
             return []
 
-        traces: List[Dict[str, Any]] = []
-        with self.traces_path.open("r", encoding="utf-8") as fh:
+        return self._load_jsonl(self.traces_path)
+
+    @staticmethod
+    def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
+        if not path.exists():
+            return records
+        with path.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    traces.append(json.loads(line))
+                    records.append(json.loads(line))
                 except json.JSONDecodeError:
                     logger.debug("Skipping malformed trace line: %s", line[:80])
-        return traces
+        return records

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from src.core.types import ProcessedQuery, RetrievalResult
+from src.observability.redaction import redact_text
 
 if TYPE_CHECKING:
     from src.core.query_engine.dense_retriever import DenseRetriever
@@ -42,7 +43,7 @@ def _snapshot_results(
         results: List of RetrievalResult objects.
 
     Returns:
-        List of dicts with chunk_id, score, full text, source.
+        List of dicts with chunk_id, score, and a bounded redacted preview.
     """
     if not results:
         return []
@@ -50,7 +51,7 @@ def _snapshot_results(
         {
             "chunk_id": r.chunk_id,
             "score": round(r.score, 4),
-            "text": r.text or "",
+            "redacted_preview": redact_text(r.text or "", max_length=256),
             "source": r.metadata.get("source_path", r.metadata.get("source", "")),
         }
         for r in results

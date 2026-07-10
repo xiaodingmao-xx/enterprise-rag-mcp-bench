@@ -26,6 +26,7 @@ from src.core.settings import Settings, load_settings, resolve_path
 from src.core.types import Chunk
 from src.core.trace.trace_context import TraceContext
 from src.observability.logger import get_logger
+from src.observability.redaction import redact_text
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
@@ -413,6 +414,12 @@ class IngestionPipeline:
         _total_stages = 7
         _storage_lock = None
 
+        if trace is not None:
+            pipeline_settings = getattr(self, "settings", None)
+            trace.configure_security(pipeline_settings)
+            trace.operation = "ingestion"
+            trace.model = getattr(getattr(pipeline_settings, "llm", None), "model", None)
+
         def _notify(stage_name: str, step: int) -> None:
             if on_progress is not None:
                 on_progress(stage_name, step, _total_stages)
@@ -565,7 +572,7 @@ class IngestionPipeline:
                     "file_type": document.metadata.get("file_type", document.metadata.get("doc_type", "")),
                     "text_length": len(document.text),
                     "image_count": image_count,
-                    "text_preview": document.text,
+                    "redacted_preview": redact_text(document.text, max_length=256),
                 }, elapsed_ms=_elapsed)
             
             # ─────────────────────────────────────────────────────────────
@@ -595,7 +602,7 @@ class IngestionPipeline:
                     "chunks": [
                         {
                             "chunk_id": c.id,
-                            "text": c.text,
+                            "redacted_preview": redact_text(c.text, max_length=256),
                             "char_len": len(c.text),
                             "chunk_index": c.metadata.get("chunk_index", i),
                         }
@@ -649,8 +656,8 @@ class IngestionPipeline:
                     "chunks": [
                         {
                             "chunk_id": c.id,
-                            "text_before": _pre_refine_texts.get(c.id, ""),
-                            "text_after": c.text,
+                            "text_before_preview": redact_text(_pre_refine_texts.get(c.id, ""), max_length=256),
+                            "text_after_preview": redact_text(c.text, max_length=256),
                             "char_len": len(c.text),
                             "refined_by": c.metadata.get("refined_by", ""),
                             "enriched_by": c.metadata.get("enriched_by", ""),

@@ -123,6 +123,21 @@ observability:
   trace_enabled: true
   trace_file: "./logs/traces.jsonl"
   structured_logging: true
+  environment: "development"  # production forbids disabled redaction and prompt capture
+  audit_file: "./logs/audit.jsonl"
+  operational_file: "./logs/operational.jsonl"
+  redaction:
+    enabled: true
+    max_text_length: 256
+    hash_user_id: true
+  trace:
+    include_chunk_text: false
+    include_prompt: false
+    sampling_rate: 1.0
+  retention:
+    max_days: 30
+    max_file_size_mb: 100
+    rotation_count: 5
 
 # =============================================================================
 # Performance Configuration

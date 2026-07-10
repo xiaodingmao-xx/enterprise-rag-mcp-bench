@@ -250,11 +250,38 @@ class EvaluationSettings:
 
 
 @dataclass(frozen=True)
+class RedactionSettings:
+    enabled: bool = True
+    max_text_length: int = 256
+    hash_user_id: bool = True
+
+
+@dataclass(frozen=True)
+class TraceSettings:
+    include_chunk_text: bool = False
+    include_prompt: bool = False
+    sampling_rate: float = 1.0
+
+
+@dataclass(frozen=True)
+class RetentionSettings:
+    max_days: int = 30
+    max_file_size_mb: int = 100
+    rotation_count: int = 5
+
+
+@dataclass(frozen=True)
 class ObservabilitySettings:
     log_level: str
     trace_enabled: bool
     trace_file: str
     structured_logging: bool
+    environment: str = "development"
+    audit_file: str = "./logs/audit.jsonl"
+    operational_file: str = "./logs/operational.jsonl"
+    redaction: RedactionSettings = field(default_factory=RedactionSettings)
+    trace: TraceSettings = field(default_factory=TraceSettings)
+    retention: RetentionSettings = field(default_factory=RetentionSettings)
 
 
 @dataclass(frozen=True)
@@ -514,6 +541,54 @@ class Settings:
 
         rerank_top_k = _require_int(rerank, "top_k", "rerank")
 
+        observability_redaction = _optional_mapping(observability.get("redaction"))
+        observability_trace = _optional_mapping(observability.get("trace"))
+        observability_retention = _optional_mapping(observability.get("retention"))
+        observability_environment = str(
+            observability.get(
+                "environment",
+                os.environ.get("APP_ENV", os.environ.get("ENVIRONMENT", "development")),
+            )
+            or "development"
+        ).strip().lower()
+        observability_settings = ObservabilitySettings(
+            log_level=_require_str(observability, "log_level", "observability"),
+            trace_enabled=_require_bool(observability, "trace_enabled", "observability"),
+            trace_file=_require_str(observability, "trace_file", "observability"),
+            structured_logging=_require_bool(observability, "structured_logging", "observability"),
+            environment=observability_environment,
+            audit_file=str(observability.get("audit_file", "./logs/audit.jsonl")),
+            operational_file=str(observability.get("operational_file", "./logs/operational.jsonl")),
+            redaction=RedactionSettings(
+                enabled=bool(observability_redaction.get("enabled", True)),
+                max_text_length=_int_or_default(observability_redaction.get("max_text_length"), 256, 1),
+                hash_user_id=bool(observability_redaction.get("hash_user_id", True)),
+            ),
+            trace=TraceSettings(
+                include_chunk_text=bool(observability_trace.get("include_chunk_text", False)),
+                include_prompt=bool(observability_trace.get("include_prompt", False)),
+                sampling_rate=_float_or_default(observability_trace.get("sampling_rate"), 1.0, 0.0),
+            ),
+            retention=RetentionSettings(
+                max_days=_int_or_default(observability_retention.get("max_days"), 30, 0),
+                max_file_size_mb=_int_or_default(observability_retention.get("max_file_size_mb"), 100, 1),
+                rotation_count=_int_or_default(observability_retention.get("rotation_count"), 5, 1),
+            ),
+        )
+        # Force policy validation even when settings are loaded from a minimal
+        # test configuration.
+        from src.observability.redaction import RedactionConfig
+
+        RedactionConfig(
+            enabled=observability_settings.redaction.enabled,
+            max_text_length=observability_settings.redaction.max_text_length,
+            hash_user_id=observability_settings.redaction.hash_user_id,
+            include_chunk_text=observability_settings.trace.include_chunk_text,
+            include_prompt=observability_settings.trace.include_prompt,
+            sampling_rate=observability_settings.trace.sampling_rate,
+            environment=observability_settings.environment,
+        )
+
         settings = cls(
             llm=LLMSettings(
                 provider=_require_str(llm, "provider", "llm"),
@@ -639,12 +714,7 @@ class Settings:
                 provider=_require_str(evaluation, "provider", "evaluation"),
                 metrics=[str(item) for item in _require_list(evaluation, "metrics", "evaluation")],
             ),
-            observability=ObservabilitySettings(
-                log_level=_require_str(observability, "log_level", "observability"),
-                trace_enabled=_require_bool(observability, "trace_enabled", "observability"),
-                trace_file=_require_str(observability, "trace_file", "observability"),
-                structured_logging=_require_bool(observability, "structured_logging", "observability"),
-            ),
+            observability=observability_settings,
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
             performance=performance_settings,

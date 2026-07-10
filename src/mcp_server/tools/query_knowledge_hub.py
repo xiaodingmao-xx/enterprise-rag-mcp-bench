@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Hashable, List, Optional, TYPE_CHECKING
 
@@ -35,6 +36,8 @@ from src.core.settings import load_settings, resolve_path, Settings
 from src.core.trace import TraceContext, TraceCollector
 from src.core.types import RetrievalResult
 from src.core.query_engine.query_cache import LruTtlCache
+from src.observability.audit import AuditLogger
+from src.observability.redaction import redact_text
 
 if TYPE_CHECKING:
     from src.core.query_engine.hybrid_search import HybridSearch
@@ -101,6 +104,19 @@ TOOL_INPUT_SCHEMA: Dict[str, Any] = {
             "type": "boolean",
             "description": "Whether to include citation metadata in the structured response.",
             "default": True,
+        },
+        "tenant_id": {
+            "type": "string",
+            "description": "Tenant identity used for audit correlation.",
+            "default": "default",
+        },
+        "user_id": {
+            "type": "string",
+            "description": "Optional actor identity; only a hash is written to logs.",
+        },
+        "request_id": {
+            "type": "string",
+            "description": "Optional caller request correlation id.",
         },
     },
     "required": ["query"],
@@ -316,6 +332,9 @@ class QueryKnowledgeHubTool:
         include_citations: bool = True,
         answer_style: Optional[str] = None,
         language: str = "auto",
+        tenant_id: str = "default",
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> MCPToolResponse:
         """Execute the query_knowledge_hub tool.
         
@@ -352,7 +371,17 @@ class QueryKnowledgeHubTool:
             f"top_k={effective_top_k}, collection={effective_collection}"
         )
         
-        trace = TraceContext(trace_type="query")
+        trace = TraceContext(
+            trace_type="query",
+            request_id=request_id or str(uuid.uuid4()),
+            tenant_id=tenant_id or "default",
+        )
+        trace.configure_security(self.settings)
+        trace.set_context(
+            user_id=user_id,
+            operation="query_knowledge_hub",
+            model=getattr(getattr(self.settings, "llm", None), "model", None),
+        )
         trace.metadata["query"] = query[:200]
         trace.metadata["top_k"] = effective_top_k
         trace.metadata["collection"] = effective_collection
@@ -394,7 +423,15 @@ class QueryKnowledgeHubTool:
                     },
                     elapsed_ms=_cache_elapsed,
                 )
-                TraceCollector().collect(trace)
+                trace.status = "success"
+                self._collect_trace(trace)
+                self._write_audit(
+                    trace=trace,
+                    query=query,
+                    resource=effective_collection,
+                    document_ids=self._document_ids_from_response(cached_response),
+                    success=True,
+                )
                 return cached_response
 
             trace.metadata["cache_hit"] = False
@@ -461,8 +498,9 @@ class QueryKnowledgeHubTool:
             trace.metadata["final_results"] = [
                 {
                     "chunk_id": r.chunk_id,
+                    "document_id": self._document_id_from_result(r),
                     "score": round(r.score, 4),
-                    "text": r.text or "",
+                    "redacted_preview": redact_text(r.text or "", max_length=256),
                     "source": r.metadata.get("source_path", r.metadata.get("source", "")),
                     "title": r.metadata.get("title", ""),
                 }
@@ -477,14 +515,106 @@ class QueryKnowledgeHubTool:
             if query_cache is not None and "error" not in response.metadata:
                 query_cache.set(cache_key, response)
             
-            TraceCollector().collect(trace)
+            trace.status = "failed" if "error" in response.metadata else "success"
+            trace.error_code = "QUERY_FAILED" if trace.status == "failed" else None
+            self._collect_trace(trace)
+            self._write_audit(
+                trace=trace,
+                query=query,
+                resource=effective_collection,
+                document_ids=[self._document_id_from_result(result) for result in results],
+                success=trace.status == "success",
+                error_code=trace.error_code,
+            )
             return response
             
         except Exception as e:
-            logger.exception(f"query_knowledge_hub failed: {e}")
-            TraceCollector().collect(trace)
+            trace.status = "failed"
+            trace.error_code = self._error_code(e)
+            logger.error("query_knowledge_hub failed: %s", e)
+            self._collect_trace(trace)
+            self._write_audit(
+                trace=trace,
+                query=query,
+                resource=effective_collection,
+                document_ids=[],
+                success=False,
+                permission_denied=trace.error_code == "PERMISSION_DENIED",
+                error_code=trace.error_code,
+            )
             # Return error response
             return self._build_error_response(query, effective_collection, str(e))
+
+    def _write_audit(
+        self,
+        *,
+        trace: TraceContext,
+        query: str,
+        resource: str,
+        document_ids: List[str],
+        success: bool,
+        permission_denied: bool = False,
+        error_code: Optional[str] = None,
+    ) -> None:
+        """Persist an access event without mixing it into debug traces."""
+
+        try:
+            AuditLogger(settings=self.settings).write(
+                trace_id=trace.trace_id,
+                request_id=trace.request_id,
+                tenant_id=trace.tenant_id,
+                user_id_hash=trace.user_id_hash,
+                operation=trace.operation,
+                resource=resource,
+                tool=TOOL_NAME,
+                query=query,
+                document_ids=document_ids,
+                permission_denied=permission_denied,
+                success=success,
+                error_code=error_code,
+            )
+        except OSError:
+            logger.error("Failed to write audit event for trace %s", trace.trace_id)
+
+    def _collect_trace(self, trace: TraceContext) -> None:
+        """Collect traces while remaining compatible with injected test collectors."""
+
+        try:
+            TraceCollector(settings=self.settings).collect(trace)
+        except TypeError:
+            TraceCollector().collect(trace)
+
+    @staticmethod
+    def _document_id_from_result(result: RetrievalResult) -> str:
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        return str(
+            metadata.get("document_id")
+            or metadata.get("doc_id")
+            or metadata.get("source_doc_id")
+            or result.chunk_id
+        )
+
+    @classmethod
+    def _document_ids_from_response(cls, response: MCPToolResponse) -> List[str]:
+        metadata = getattr(response, "metadata", {}) or {}
+        values = metadata.get("document_ids", []) if isinstance(metadata, dict) else []
+        if not values and isinstance(metadata, dict):
+            for result in metadata.get("results", []) or []:
+                if isinstance(result, dict):
+                    values.append(
+                        result.get("document_id")
+                        or result.get("doc_id")
+                        or result.get("source_doc_id")
+                        or result.get("chunk_id")
+                    )
+        return [str(value) for value in values if value is not None]
+
+    @staticmethod
+    def _error_code(error: Exception) -> str:
+        message = str(error).lower()
+        if any(token in message for token in ("permission", "forbidden", "unauthorized", "access denied")):
+            return "PERMISSION_DENIED"
+        return "QUERY_FAILED"
     
     def _perform_search(
         self,
@@ -924,6 +1054,9 @@ async def query_knowledge_hub_handler(
     language: str = "auto",
     include_sources: bool = True,
     include_citations: bool = True,
+    tenant_id: str = "default",
+    user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> types.CallToolResult:
     """Handler function for MCP tool registration.
     
@@ -953,6 +1086,9 @@ async def query_knowledge_hub_handler(
             language=language,
             include_sources=include_sources,
             include_citations=include_citations,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request_id=request_id,
         )
         
         # Use to_mcp_content() which handles multimodal (text + images)

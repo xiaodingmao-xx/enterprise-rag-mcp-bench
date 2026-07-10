@@ -6,9 +6,17 @@ finish() lifecycle, and to_dict() serialisation for JSON Lines output.
 
 import time
 import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
+
+from src.observability.redaction import (
+    RedactionConfig,
+    config_from_settings,
+    hash_user_id,
+    redact_trace_payload,
+)
 
 
 @dataclass
@@ -26,15 +34,64 @@ class TraceContext:
 
     trace_type: Literal["query", "ingestion"] = "query"
     trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    tenant_id: str = "default"
+    user_id_hash: str = "anonymous"
+    operation: str = ""
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     finished_at: Optional[str] = field(default=None)
+    status: str = "success"
+    error_code: Optional[str] = None
+    model: Optional[str] = None
+    token_usage: Dict[str, Any] = field(default_factory=dict)
+    estimated_cost: float = 0.0
     stages: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Raw user id is accepted only as an in-memory convenience and is never
+    # serialized.  Callers should prefer passing user_id_hash directly.
+    user_id: Optional[str] = field(default=None, repr=False, compare=False)
+    _redaction_config: Optional[RedactionConfig] = field(default=None, repr=False, compare=False)
 
     # internal monotonic clock for accurate elapsed calculation
     _start_mono: float = field(default_factory=time.monotonic, repr=False)
     _finish_mono: Optional[float] = field(default=None, repr=False)
     _stage_timings: Dict[str, float] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.operation:
+            self.operation = self.trace_type
+        if self.user_id is not None and (not self.user_id_hash or self.user_id_hash == "anonymous"):
+            self.user_id_hash = hash_user_id(self.user_id)
+        if not self.user_id_hash:
+            self.user_id_hash = "anonymous"
+
+    def configure_security(self, settings: Any = None) -> None:
+        """Attach the application redaction policy to this request context."""
+
+        self._redaction_config = config_from_settings(settings)
+
+    def set_context(
+        self,
+        *,
+        request_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        """Set request-scoped identity without retaining raw user data."""
+
+        if request_id:
+            self.request_id = request_id
+        if tenant_id:
+            self.tenant_id = tenant_id
+        if user_id is not None:
+            config = self._redaction_config or RedactionConfig()
+            self.user_id_hash = hash_user_id(user_id, enabled=config.hash_user_id)
+        if operation:
+            self.operation = operation
+        if model:
+            self.model = model
 
     # ---- recording ---------------------------------------------------
 
@@ -65,10 +122,14 @@ class TraceContext:
 
     # ---- lifecycle ----------------------------------------------------
 
-    def finish(self) -> None:
+    def finish(self, *, status: Optional[str] = None, error_code: Optional[str] = None) -> None:
         """Mark the trace as finished and record wall-clock end time."""
         self._finish_mono = time.monotonic()
         self.finished_at = datetime.now(timezone.utc).isoformat()
+        if status:
+            self.status = status
+        if error_code:
+            self.error_code = error_code
 
     # ---- timing helpers -----------------------------------------------
 
@@ -97,7 +158,20 @@ class TraceContext:
 
     # ---- serialisation ------------------------------------------------
 
-    def to_dict(self) -> Dict[str, Any]:
+    def should_sample(self, config: Optional[RedactionConfig] = None) -> bool:
+        """Return whether this debug trace is selected by the sampling policy."""
+
+        cfg = config or self._redaction_config or RedactionConfig()
+        if cfg.sampling_rate >= 1.0:
+            return True
+        if cfg.sampling_rate <= 0.0:
+            return False
+        # Stable sampling keeps the same trace selected across retries/processes.
+        digest = hashlib.sha256(self.trace_id.encode("utf-8")).hexdigest()
+        bucket = int(digest[:12], 16) / float(16**12)
+        return bucket < cfg.sampling_rate
+
+    def to_dict(self, redaction_config: Optional[RedactionConfig] = None) -> Dict[str, Any]:
         """Serialise the trace to a plain dict suitable for ``json.dumps``.
 
         Returns:
@@ -108,8 +182,20 @@ class TraceContext:
         if self.finished_at is not None and rounded_elapsed_ms == 0:
             rounded_elapsed_ms = 0.01
 
-        return {
+        raw_payload = {
             "trace_id": self.trace_id,
+            "request_id": self.request_id,
+            "tenant_id": self.tenant_id,
+            "user_id_hash": self.user_id_hash,
+            "operation": self.operation,
+            "start_time": self.started_at,
+            "end_time": self.finished_at,
+            "latency_ms": rounded_elapsed_ms,
+            "status": self.status,
+            "error_code": self.error_code,
+            "model": self.model,
+            "token_usage": dict(self.token_usage),
+            "estimated_cost": float(self.estimated_cost or 0.0),
             "trace_type": self.trace_type,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -117,6 +203,8 @@ class TraceContext:
             "stages": list(self.stages),
             "metadata": dict(self.metadata),
         }
+        config = redaction_config or self._redaction_config or RedactionConfig()
+        return redact_trace_payload(raw_payload, config)
 
     # ---- backwards-compat helper used in C5 / C6 -----------------------
 

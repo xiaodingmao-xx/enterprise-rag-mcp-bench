@@ -16,6 +16,7 @@ import streamlit as st
 from PIL import Image, ImageStat, UnidentifiedImageError
 
 from src.observability.dashboard.services.data_service import DataService
+from src.observability.redaction import redact_text
 
 
 IMAGE_PREVIEW_WIDTH = 200
@@ -176,7 +177,9 @@ def render() -> None:
     st.subheader(f"📄 Documents ({len(docs)})")
 
     for idx, doc in enumerate(docs):
-        source_name = Path(doc["source_path"]).name
+        safe_source_path = redact_text(doc.get("source_path", ""), max_length=256, is_path=True)
+        source_name = Path(safe_source_path).name
+        doc["source_path"] = safe_source_path
         label = f"📑 {source_name}  —  {doc['chunk_count']} chunks · {doc['image_count']} images"
         with st.expander(label, expanded=(len(docs) == 1)):
             # ── Document metadata ──────────────────────────────────
@@ -197,7 +200,7 @@ def render() -> None:
             if chunks:
                 st.markdown(f"### 📦 Chunks ({len(chunks)})")
                 for cidx, chunk in enumerate(chunks):
-                    text = chunk.get("text", "")
+                    text = redact_text(chunk.get("text", ""), max_length=256)
                     meta = chunk.get("metadata", {})
                     chunk_id = chunk["id"]
 
@@ -213,8 +216,8 @@ def render() -> None:
                             f"**Chunk {cidx + 1}** · `{chunk_id[-16:]}` · "
                             f"{len(text)} chars"
                         )
-                        # Show the actual chunk text (scrollable)
-                        _height = max(120, min(len(text) // 2, 600))
+                        # Show only a bounded redacted preview.
+                        _height = 100
                         st.text_area(
                             "Content",
                             value=text,
