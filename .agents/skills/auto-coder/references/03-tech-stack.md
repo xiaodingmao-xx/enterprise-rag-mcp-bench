@@ -422,6 +422,19 @@ MCP 协议的 Tool 返回格式支持多种内容类型（`content` 数组），
 	- 评估模块设计为**组合模式**，可同时挂载多个 Evaluator，生成综合报告。
 	- 配置示例：`evaluation.backends: [ragas, custom_metrics]`，系统并行执行并汇总结果。
 
+- **消融评估 (Ablation Evaluation)**：
+	- 提供 `scripts/run_ablation_eval.py`，统一对比 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式。
+	- 指标模块 `src/observability/evaluation/ir_metrics.py` 实现 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，以 pure function 形式提供，便于单元测试和复用。
+	- 评估结果保存到 `eval/results/{timestamp}.json`，可通过 `--markdown` 额外输出 Markdown 表格，便于实验记录与面试讲解。
+
+- **MMDocRAG 多模态文档评测**：
+	- 提供 `scripts/run_mmdocrag_eval.py`，复用 `dense`、`bm25`、`hybrid`、`hybrid_rerank` 四种检索模式，在不改动主 RAG 链路的前提下增加多模态文档 QA 指标。
+	- 检索质量复用 `ir_metrics.py` 中的 `Recall@K` 与 `NDCG@K`。
+	- `multimodal_metrics.py` 计算 `modality_recall@k`、`image_hit@k`、`table_hit@k`，从 `metadata.modality`、`content_type`、`has_image`、`has_table`、`image_id`、`table_id` 等字段推断模态，字段缺失时优雅降级。
+	- `generation_metrics.py` 通过可选 LLM-as-Judge 计算 `answer_correctness` 与 `faithfulness`；未开启 judge 或 API Key 缺失时自动跳过，不影响检索指标。
+	- `citation_metrics.py` 计算 `citation_accuracy`，兼容答案中的 `[1]` 排名引用、显式 `chunk_id/image_id/table_id` 标记，以及 golden set 的 `expected_sources`、`expected_pages`、`expected_chunk_ids`、`expected_evidence`。
+	- 评估结果保存到 `eval/results/{timestamp}_mmdocrag.json`，可通过 `--markdown` 输出包含平均 latency 的汇总表。
+
 #### 3.3.5 配置管理与切换流程
 
 - **配置文件结构示例** (`config/settings.yaml`)：
@@ -451,6 +464,11 @@ MCP 协议的 Tool 返回格式支持多种内容类型（`content` 数组），
 	  port: 8501
 	  traces_dir: ./logs
 	```
+
+- **环境变量与密钥管理**：
+	- YAML 配置加载阶段支持 `${ENV_NAME:-default}` 占位符，环境变量存在且非空时使用环境变量，否则使用 `default`。
+	- `llm.api_key`、`embedding.api_key`、`vision_llm.api_key` 默认从 `LLM_API_KEY`、`EMBEDDING_API_KEY`、`VISION_LLM_API_KEY` 读取。
+	- 仓库只提交 `.env.example` 与 `config/settings.example.yaml`，真实 API Key 必须放在本机 `.env` 或系统环境变量中。
 
 - **切换流程**：
 
@@ -908,3 +926,30 @@ Hybrid Search 命中 Chunk（正文含 "[图片描述: 系统采用三层架构.
 - **降级策略**：
   - 当 Vision LLM 不可用时，系统回退到"仅保留图片占位符"模式，图片不参与检索但不阻塞 Ingestion 流程。
   - 在 Chunk 中标记 `has_unprocessed_images: true`，后续可增量补充描述。
+
+## 3.6 多租户、身份与文档 ACL 安全边界
+
+企业文档场景下，检索授权必须在召回链路中完成，不能只依赖提示词约束生成模型。当前实现的统一安全模型位于 `src/security/`：
+
+- `models.py`：`DocumentACL`，统一保存 `tenant_id`、`document_id`、`version_id`、`owner_id`、`acl_users`、`acl_roles`、`acl_visibility`、`acl_department`、来源系统及时间字段。
+- `context.py`：不可从全局变量读取用户身份的 `RequestContext`；`local-dev` 自动使用配置中的默认租户/用户，`production` 要求已验证 JWT/OIDC 上下文。
+- `policy.py`：执行 `private/users/roles/department/tenant/public` 六类可见性策略，先校验租户，再校验用户、角色或部门。
+- `acl_filter.py`：提供后端原生过滤条件和统一二次过滤结果。
+
+摄取阶段将文档 ACL 写入 Document metadata，并在 split/transform 后再次覆盖到每个 Chunk metadata，保证文档与 chunk 的 ACL 一致。查询、集合列表、文档摘要以及 MCP document/chunk resource resolver 都必须接收可信 `RequestContext`。
+
+### 检索后端过滤边界
+
+| 后端/阶段 | 过滤方式 | 说明 |
+|---|---|---|
+| Chroma Dense | 原生 metadata `tenant_id` equality filter | Chroma 当前稳定支持标量 metadata equality；用户/角色/部门 ACL 在结果进入融合前二次过滤 |
+| BM25 / SQLite FTS5 | 取回 chunk metadata 后 post-filter | 索引查询接口没有统一 ACL metadata where 能力，tenant/ACL 过滤发生在 metadata hydration 后 |
+| Hybrid/RRF | 融合前 post-filter | 过滤后的结果才允许进入融合，避免无权限候选影响排序 |
+| Rerank | 只接收已授权结果 | 无权限结果不会进入 LLM/Cross-Encoder rerank |
+| MCP resources / summary / collection list | 资源读取前 post-filter | 未授权资源按 not-found/empty 处理，避免泄露资源存在性 |
+
+查询会对召回数量进行有限 over-fetch（当前为请求候选数的 3 倍），降低 post-filter 造成的召回损失。若后端在 ACL 过滤前已经达到返回上限，仍可能存在候选被权限过滤后的潜在召回损失；该情况会在 trace 的 `acl_filter.potential_recall_loss` 中记录。只要所有新摄取文档带有正确的 tenant/ACL metadata，当前系统是真正按 tenant 隔离的；缺失 ACL metadata 的历史数据仅在 local-dev 兼容放行，production 默认拒绝。
+
+### 安全 Trace 与审计日志
+
+`logs/traces.jsonl` 只保存安全 debug trace，默认不保存完整文档、chunk、prompt 或 API Key；`logs/operational.jsonl` 保存低基数运行字段；`logs/audit.jsonl` 独立保存租户、用户 hash、工具、资源、document_id、权限拒绝和成功状态。`src/observability/redaction.py` 负责 PII/secret/path 脱敏，`TraceService.delete_trace()` 提供单条 debug trace 删除接口，retention 配置负责轮转和过期清理。Dashboard 只展示 `trace_id/stage/duration/status/error_code/document_id/chunk_id/redacted_preview`。

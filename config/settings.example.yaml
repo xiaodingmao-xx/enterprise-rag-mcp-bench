@@ -150,6 +150,15 @@ ingestion:
     job_db_path: "./data/db/ingestion_jobs.db"
     upload_dir: "./data/uploads/ingestion"
     storage_lock_scope: "collection"
+  task_queue:
+    backend: "sqlite"
+    db_path: "./data/db/ingestion_tasks.db"
+    lease_seconds: 300
+    heartbeat_interval_seconds: 30
+    max_retries: 3
+    retry_base_delay_seconds: 10
+    retry_max_delay_seconds: 300
+    retry_jitter: true
   supported_extensions:
     - ".pdf"
     - ".md"

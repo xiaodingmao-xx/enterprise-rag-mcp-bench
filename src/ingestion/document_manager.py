@@ -85,11 +85,55 @@ class DocumentManager:
         bm25_indexer: Any,
         image_storage: Any,
         file_integrity: Any,
+        version_store: Any = None,
+        index_cleaner: Any = None,
+        audit_log_store: Any = None,
     ) -> None:
         self.chroma = chroma_store
         self.bm25 = bm25_indexer
         self.images = image_storage
         self.integrity = file_integrity
+        self.version_store = version_store
+        self.index_cleaner = index_cleaner
+        self.audit_log_store = audit_log_store
+
+    def delete_current_version(self, document_id: str, *, tenant_id: str = "", actor: str = "system") -> Any:
+        """Soft-delete the current version and clean its local indexes."""
+        if self.version_store is None:
+            raise RuntimeError("version_store is required for version lifecycle operations")
+        record = self.version_store.get_record(document_id)
+        if record is None or not record.current_version_id:
+            raise KeyError(f"No current version for document_id: {document_id}")
+        self._clean_version(document_id, record.current_version_id)
+        return self.version_store.delete_version(document_id, record.current_version_id, tenant_id=tenant_id, actor=actor)
+
+    def delete_version(self, document_id: str, version_id: str, *, tenant_id: str = "", actor: str = "system") -> Any:
+        if self.version_store is None:
+            raise RuntimeError("version_store is required for version lifecycle operations")
+        self._clean_version(document_id, version_id)
+        return self.version_store.delete_version(document_id, version_id, tenant_id=tenant_id, actor=actor)
+
+    def delete_all_versions(self, document_id: str, *, tenant_id: str = "", actor: str = "system") -> Any:
+        if self.version_store is None:
+            raise RuntimeError("version_store is required for version lifecycle operations")
+        versions = self.version_store.list_versions(document_id)
+        for version in versions:
+            if version.status != "deleted":
+                self._clean_version(document_id, version.version_id)
+        return self.version_store.delete_all_versions(document_id, tenant_id=tenant_id, actor=actor)
+
+    def rollback_to_version(self, document_id: str, version_id: str, *, tenant_id: str = "", actor: str = "system") -> Any:
+        if self.version_store is None:
+            raise RuntimeError("version_store is required for version lifecycle operations")
+        return self.version_store.rollback_to_version(document_id, version_id, tenant_id=tenant_id, actor=actor)
+
+    def _clean_version(self, document_id: str, version_id: str) -> None:
+        if self.index_cleaner is None:
+            return
+        for method_name in ("delete_vectors", "delete_sparse_index", "delete_images", "delete_cache"):
+            method = getattr(self.index_cleaner, method_name, None)
+            if callable(method):
+                method(document_id, version_id)
 
     # ------------------------------------------------------------------
     # list_documents

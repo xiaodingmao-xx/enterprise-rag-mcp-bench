@@ -375,3 +375,23 @@ def get_default_ingestion_queue(
         if _default_queue is None:
             _default_queue = IngestionTaskQueue(settings=settings)
         return _default_queue
+
+
+# The durable backend is exported from the historical queue module so callers
+# can migrate incrementally without changing their import path.
+from src.ingestion.task_queue_backend import SQLiteTaskQueueBackend  # noqa: E402
+
+TaskQueueBackend = SQLiteTaskQueueBackend
+
+
+def get_task_queue_backend(settings: Optional[Settings] = None) -> SQLiteTaskQueueBackend:
+    """Build the configured local durable queue backend."""
+    settings = settings or load_settings()
+    ingestion = getattr(settings, "ingestion", None)
+    config = getattr(ingestion, "task_queue", {}) if ingestion is not None else {}
+    if not isinstance(config, dict):
+        config = {}
+    backend = str(config.get("backend", "sqlite")).lower()
+    if backend != "sqlite":
+        raise ValueError(f"Unsupported task queue backend: {backend}; SQLite is the current default")
+    return SQLiteTaskQueueBackend(config.get("db_path", "./data/db/ingestion_tasks.db"), config)

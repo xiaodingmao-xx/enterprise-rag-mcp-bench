@@ -147,8 +147,11 @@
 ```
 smart-knowledge-hub/
 │
+├── .env.example                         # 环境变量示例，不包含真实密钥
+│
 ├── config/                              # 配置文件目录
 │   ├── settings.yaml                    # 主配置文件 (LLM/Embedding/VectorStore 配置)
+│   ├── settings.example.yaml            # 示例配置，使用 ${ENV_NAME:-default} 占位符
 │   └── prompts/                         # Prompt 模板目录
 │       ├── image_captioning.txt         # 图片描述生成 Prompt
 │       ├── chunk_refinement.txt         # Chunk 重写 Prompt
@@ -225,7 +228,13 @@ smart-knowledge-hub/
 │   │   ├── loader/                      # Loader 抽象 (文档加载)
 │   │   │   ├── __init__.py
 │   │   │   ├── base_loader.py           # Loader 抽象基类
+│   │   │   ├── loader_factory.py        # LoaderFactory：按扩展名分发多格式 Loader
 │   │   │   ├── pdf_loader.py            # PDF Loader (MarkItDown)
+│   │   │   ├── markdown_loader.py       # Markdown Loader
+│   │   │   ├── text_loader.py           # TXT Loader
+│   │   │   ├── html_loader.py           # HTML Loader (BeautifulSoup)
+│   │   │   ├── docx_loader.py           # DOCX Loader (python-docx)
+│   │   │   ├── code_loader.py           # 代码文件 Loader (.py/.js/.java)
 │   │   │   └── file_integrity.py        # 文件完整性检查 (SHA256 哈希)
 │   │   │
 │   │   ├── llm/                         # LLM 抽象
@@ -295,6 +304,10 @@ smart-knowledge-hub/
 │       └── evaluation/                  # 评估模块
 │           ├── __init__.py
 │           ├── eval_runner.py           # 评估执行器
+│           ├── ir_metrics.py            # IR 指标 (Recall@K/Precision@K/MRR@K/NDCG@K)
+│           ├── multimodal_metrics.py    # MMDocRAG 多模态指标
+│           ├── generation_metrics.py    # Answer Correctness / Faithfulness Judge
+│           ├── citation_metrics.py      # Citation Accuracy
 │           ├── ragas_evaluator.py       # Ragas 评估实现
 │           └── composite_evaluator.py   # 组合评估器 (多后端并行)
 
@@ -325,11 +338,15 @@ smart-knowledge-hub/
 │   ├── traces.jsonl                     # 追踪日志 (JSON Lines)
 │   └── app.log                          # 应用日志
 │
+├── eval/                                # 离线评估输出目录
+│   └── results/                         # Ablation JSON/Markdown 结果
+│
 ├── tests/                               # 测试目录
 │   ├── unit/                            # 单元测试
 │   │   ├── test_dense_retriever.py      # D2: 稠密检索器测试
 │   │   ├── test_sparse_retriever.py     # D3: 稀疏检索器测试
 │   │   ├── test_fusion_rrf.py           # D4: RRF 融合测试
+│   │   ├── test_ir_metrics.py           # IR 指标测试
 │   │   ├── test_reranker_fallback.py    # D6: Reranker 回退测试
 │   │   ├── test_protocol_handler.py     # E2: 协议处理器测试
 │   │   ├── test_response_builder.py     # E3: 响应构建器测试
@@ -354,6 +371,8 @@ smart-knowledge-hub/
 │   ├── ingest.py                        # 数据摄取脚本（离线摄取入口）
 │   ├── query.py                         # 查询测试脚本（在线查询入口）
 │   ├── evaluate.py                      # 评估运行脚本
+│   ├── run_ablation_eval.py             # 消融评估脚本 (dense/bm25/hybrid/hybrid_rerank)
+│   ├── run_mmdocrag_eval.py             # MMDocRAG 多模态文档评测脚本
 │   └── start_dashboard.py               # Dashboard 启动脚本
 │
 ├── main.py                              # MCP Server 启动入口
@@ -376,7 +395,7 @@ smart-knowledge-hub/
 
 | 模块 | 职责 | 关键技术点 |
 |-----|-----|----------|
-| `settings.py` | 配置加载与校验 | 读取 `config/settings.yaml`，解析为 `Settings`，必填字段校验（fail-fast） |
+| `settings.py` | 配置加载与校验 | 读取 `config/settings.yaml`，展开 `${ENV_NAME:-default}` 环境变量占位符，解析为 `Settings`，必填字段校验（fail-fast） |
 | `types.py` | 核心数据类型/契约（全链路复用） | 定义 `Document/Chunk/ChunkRecord/ProcessedQuery/RetrievalResult`；序列化稳定；作为 ingestion/retrieval/mcp 的数据契约中心 |
 | `query_processor.py` | 查询预处理 | 关键词提取、同义词扩展、Metadata 解析 |
 | `hybrid_search.py` | 混合检索编排 | 并行 Dense/Sparse 召回，结果融合，Metadata 过滤 |
@@ -394,9 +413,11 @@ smart-knowledge-hub/
 
 | 脚本 | 职责 | 关键技术点 |
 |-----|-----|----------|
-| `ingest.py` | 离线数据摄取入口 | CLI 参数解析，调用 Ingestion Pipeline，支持 `--collection`/`--path`/`--force` |
+| `ingest.py` | 离线数据摄取入口 | CLI 参数解析，调用 Ingestion Pipeline，基于 `LoaderFactory` 发现支持的多格式文档，支持 `--collection`/`--path`/`--force` |
 | `query.py` | 在线查询测试入口 | CLI 参数解析，调用 HybridSearch + Reranker，支持 `--query`/`--top-k`/`--verbose` |
 | `evaluate.py` | 评估运行入口 | 加载 golden_test_set，运行评估，输出 metrics |
+| `run_ablation_eval.py` | 消融评估入口 | 对比 dense/bm25/hybrid/hybrid_rerank，输出 JSON 与可选 Markdown 表格 |
+| `run_mmdocrag_eval.py` | MMDocRAG 评测入口 | 对比四种检索模式，输出检索质量、多模态能力、答案质量、引用可靠性与 latency |
 | `start_dashboard.py` | Dashboard 启动入口 | Streamlit 应用启动 |
 
 #### 5.3.4 Ingestion Pipeline 层
@@ -409,7 +430,7 @@ smart-knowledge-hub/
 | `chunking/document_chunker.py` | Document→Chunks 转换 | 调用 `libs.splitter` 进行文本切分；生成稳定 Chunk ID（格式：`{doc_id}_{index:04d}_{hash}`）；继承 metadata；建立 source_ref 溯源链接 |
 | `transform/base_transform.py` | Transform 抽象 | 原子化、幂等；可独立重试；失败降级不阻塞 |
 | `transform/chunk_refiner.py` | Chunk 智能重组 | 规则去噪 + 可选 LLM 二次加工；可回退 |
-| `transform/metadata_enricher.py` | 元数据增强 | Title/Summary/Tags 规则生成 + 可选 LLM 增强 |
+| `transform/metadata_enricher.py` | 元数据增强 | 结构化 metadata 生成（title/summary/tags/path/page/media/entities/questions）+ 可选 LLM JSON 增强 + SQLite 缓存 |
 | `transform/image_captioner.py` | 图片描述生成 | Vision LLM；写回 metadata/text；禁用/失败降级 |
 | `embedding/dense_encoder.py` | 稠密向量编码 | 通过 `libs.embedding` 调用具体 provider；批处理 |
 | `embedding/sparse_encoder.py` | 稀疏向量编码 | BM25 编码/统计（或替换实现）；批处理 |
@@ -447,6 +468,10 @@ smart-knowledge-hub/
 | `dashboard/services/data_service.py` | 数据浏览服务 | 封装 ChromaStore/ImageStorage 读取 |
 | `dashboard/services/config_service.py` | 配置读取服务 | 封装 Settings 展示 |
 | `evaluation/eval_runner.py` | 评估执行 | 黄金测试集，指标计算，报告生成 |
+| `evaluation/ir_metrics.py` | IR 指标计算 | Recall@K、Precision@K、MRR@K、NDCG@K，去重后按 Top-K 计算 |
+| `evaluation/multimodal_metrics.py` | MMDocRAG 多模态指标 | Modality Recall@K、Image Hit@K、Table Hit@K，兼容多种 metadata 字段 |
+| `evaluation/generation_metrics.py` | LLM-as-Judge 生成指标 | Answer Correctness、Faithfulness，JSON 结构化输出，失败自动跳过 |
+| `evaluation/citation_metrics.py` | 引用可靠性指标 | Citation Accuracy，支持 source/page/chunk_id/image_id/table_id 标注 |
 | `evaluation/ragas_evaluator.py` | Ragas 评估 | Faithfulness, Answer Relevancy, Context Precision |
 | `evaluation/composite_evaluator.py` | 组合评估器 | 多后端并行执行，结果汇总 |
 
@@ -582,7 +607,7 @@ Dashboard (Streamlit UI)
 ### 5.5 配置驱动设计
 
 
-系统通过 `config/settings.yaml` 统一配置各组件实现，支持零代码切换：
+系统通过 `config/settings.yaml` 统一配置各组件实现，支持零代码切换。YAML 加载器支持 `${ENV_NAME:-default}` 环境变量替换，密钥字段通过环境变量注入，避免真实 API Key 进入仓库：
 
 ```yaml
 # config/settings.yaml 示例
@@ -592,17 +617,19 @@ llm:
   provider: azure           # azure | openai | ollama | deepseek
   model: gpt-4o
   azure_endpoint: "..."
-  api_key: "${AZURE_API_KEY}"
+  api_key: "${LLM_API_KEY:-}"
 
 # Embedding 配置
 embedding:
   provider: openai          # openai | azure | ollama (本地)
   model: text-embedding-3-small
+  api_key: "${EMBEDDING_API_KEY:-}"
   
 # Vision LLM 配置 (图片描述)
 vision_llm:
   provider: azure           # azure | dashscope (Qwen-VL)
   model: gpt-4o
+  api_key: "${VISION_LLM_API_KEY:-}"
   
 # 向量存储配置
 vector_store:

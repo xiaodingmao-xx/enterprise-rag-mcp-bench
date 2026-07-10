@@ -345,6 +345,7 @@ class IngestionSettings:
     metadata_enrichment: Optional[Dict[str, Any]] = None  # 结构化元数据增强配置
     document_quality: Optional[Dict[str, Any]] = None
     concurrent_upload: Dict[str, Any] = field(default_factory=dict)
+    task_queue: Dict[str, Any] = field(default_factory=dict)
     supported_extensions: List[str] = field(
         default_factory=lambda: DEFAULT_SUPPORTED_EXTENSIONS.copy()
     )
@@ -480,6 +481,11 @@ class Settings:
                 ingestion_settings,
                 "concurrent_upload",
                 _optional_mapping(ingestion.get("concurrent_upload")),
+            )
+            object.__setattr__(
+                ingestion_settings,
+                "task_queue",
+                _optional_mapping(ingestion.get("task_queue")),
             )
 
         vision_llm_settings = None

@@ -583,3 +583,34 @@ Skill 采用 **"写作原则 + 项目亮点 + 用户画像 = 定制化简历"** 
 - 📖 **八股整理**：大模型 / RAG / NLP 相关高频面试题
 
 > 👉 **请关注小红书：[不转到大模型不改名](https://www.xiaohongshu.com) 获取以上所有资源。**
+## 文档版本与可靠摄取
+
+项目现在提供基于 SQLite 的文档生命周期和可靠任务队列：
+
+- `document_records` 表表示逻辑文档；`document_versions` 表保存内容、metadata、parser、chunker 和 embedding fingerprint。
+- 相同 fingerprint 的提交是幂等的；内容或处理器版本变化会创建新版本，旧版本保留，只有完整摄取成功后才切换 `current_version_id`。
+- 版本状态为 `processing/active/failed/deleted`。新版本失败不会影响旧的 current version。
+- `SQLiteTaskQueueBackend` 提供 `queued/running/retrying/succeeded/failed/dead_letter/cancelled` 状态、lease、heartbeat、指数退避、最大重试和死信重排队。
+- `SQLiteAuditLogStore` 与 debug trace 分离，记录 ingest、activate、delete、rollback、requeue 和 cancel 等生命周期操作。
+- `IndexCleaner` 抽象负责 vector、sparse index、image 和 cache 清理；当前默认使用 SQLite + 本地 no-op/adapter，未来可替换 PostgreSQL、Redis 或 Celery。
+
+默认配置：
+
+```yaml
+ingestion:
+  task_queue:
+    backend: sqlite
+    db_path: ./data/db/ingestion_tasks.db
+    lease_seconds: 300
+    heartbeat_interval_seconds: 30
+    max_retries: 3
+    retry_base_delay_seconds: 10
+    retry_max_delay_seconds: 300
+    retry_jitter: true
+```
+
+相关离线测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_document_versions.py tests/unit/test_reliable_task_queue.py
+```

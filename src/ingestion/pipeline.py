@@ -20,6 +20,7 @@ Design Principles:
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Any
 import hashlib
+import json
 import time
 
 from src.core.settings import Settings, load_settings, resolve_path
@@ -55,6 +56,8 @@ from src.ingestion.storage.sparse_indexer_factory import (
 )
 from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.ingestion.storage.image_storage import ImageStorage
+from src.ingestion.storage.audit_log_store import SQLiteAuditLogStore
+from src.ingestion.storage.sqlite_document_version_store import SQLiteDocumentVersionStore
 from src.ingestion.storage_locks import get_storage_lock
 
 logger = get_logger(__name__)
@@ -93,6 +96,7 @@ class PipelineResult:
         self.vector_ids = vector_ids or []
         self.error = error
         self.stages = stages or {}
+        self.version_id = self.stages.get("version", {}).get("version_id")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -264,6 +268,11 @@ class IngestionPipeline:
             db_path=str(resolve_path("data/db/image_index.db")),
             images_root=str(resolve_path("data/images"))
         )
+        self.audit_log_store = SQLiteAuditLogStore("./data/db/ingestion_audit.db")
+        self.document_version_store = SQLiteDocumentVersionStore(
+            "./data/db/document_versions.db",
+            audit_log_store=self.audit_log_store,
+        )
         logger.info("  ✓ ImageStorage initialized")
         
         logger.info("Pipeline initialization complete!")
@@ -417,6 +426,8 @@ class IngestionPipeline:
         stages: Dict[str, Any] = {}
         _total_stages = 7
         _storage_lock = None
+        version_id: Optional[str] = None
+        logical_document_id: Optional[str] = None
 
         if trace is not None:
             pipeline_settings = getattr(self, "settings", None)
@@ -578,6 +589,81 @@ class IngestionPipeline:
             build_acl_metadata = getattr(self, "_build_acl_metadata", IngestionPipeline._build_acl_metadata)
             acl_metadata = build_acl_metadata(document, request_context, file_hash)
             document.metadata.update(acl_metadata)
+
+            metadata_hash = hashlib.sha256(
+                json.dumps(
+                    document.metadata,
+                    sort_keys=True,
+                    default=str,
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            logical_record = self.document_version_store.get_or_create_record(
+                tenant_id=str(request_context.tenant_id or ""),
+                source_id=self.collection,
+                external_document_id=str(file_path.resolve()),
+                document_id=hashlib.sha256(
+                    f"{request_context.tenant_id}:{self.collection}:{file_path.resolve()}".encode("utf-8")
+                ).hexdigest(),
+                title=str(document.metadata.get("title", "")),
+                source_uri=str(file_path),
+                source_type=str(
+                    document.metadata.get("file_type")
+                    or document.metadata.get("doc_type")
+                    or file_path.suffix.lstrip(".")
+                ),
+            )
+            logical_document_id = logical_record.document_id
+            parser_version = str(document.metadata.get("parser_version", "loader-v1"))
+            chunker_version = str(
+                getattr(getattr(self.settings, "ingestion", None), "splitter", "recursive")
+            )
+            embedding_model = str(getattr(self.settings.embedding, "model", "unknown"))
+            version_record = self.document_version_store.find_existing_version(
+                document_id=logical_record.document_id,
+                content_hash=file_hash,
+                metadata_hash=metadata_hash,
+                parser_version=parser_version,
+                chunker_version=chunker_version,
+                embedding_model=embedding_model,
+            )
+            if version_record is None:
+                version_record = self.document_version_store.create_version(
+                    document_id=logical_record.document_id,
+                    content_hash=file_hash,
+                    metadata_hash=metadata_hash,
+                    parser_version=parser_version,
+                    chunker_version=chunker_version,
+                    embedding_model=embedding_model,
+                )
+            elif version_record.status in {"failed", "deleted"}:
+                version_record = self.document_version_store.reset_version(version_record.version_id)
+            version_id = version_record.version_id
+            document.metadata["version_id"] = version_id
+            acl_metadata["version_id"] = version_id
+            stages["version"] = {
+                "document_id": logical_record.document_id,
+                "version_id": version_id,
+                "status": version_record.status,
+                "content_hash": file_hash,
+                "metadata_hash": metadata_hash,
+            }
+            self.audit_log_store.write(
+                action="ingest_version",
+                document_id=logical_record.document_id,
+                version_id=version_id,
+                tenant_id=str(request_context.tenant_id or ""),
+                actor=str(request_context.user_id or "system"),
+                detail={"collection": self.collection, "status": version_record.status},
+            )
+            if version_record.status == "active" and not self.force:
+                stages["version"]["skipped"] = True
+                return PipelineResult(
+                    success=True,
+                    file_path=str(file_path),
+                    doc_id=file_hash,
+                    stages=stages,
+                )
             
             stages["loading"] = {
                 "doc_id": document.id,
@@ -938,6 +1024,14 @@ class IngestionPipeline:
             # Mark Success
             # ─────────────────────────────────────────────────────────────
             self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
+            if version_id and logical_document_id:
+                self.document_version_store.mark_version_active(version_id)
+                self.document_version_store.activate_version(
+                    logical_document_id,
+                    version_id,
+                    tenant_id=str(request_context.tenant_id or ""),
+                    actor=str(request_context.user_id or "system"),
+                )
             _storage_lock.release()
             _storage_lock = None
             
@@ -967,6 +1061,11 @@ class IngestionPipeline:
                 _storage_lock = None
             logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
             failed_hash = locals().get("file_hash")
+            if version_id:
+                try:
+                    self.document_version_store.mark_version_failed(version_id, str(e))
+                except Exception:
+                    logger.exception("Failed to persist document version failure")
             if failed_hash:
                 self.integrity_checker.mark_failed(failed_hash, str(file_path), str(e))
             

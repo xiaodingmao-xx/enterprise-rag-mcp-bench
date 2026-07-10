@@ -73,9 +73,10 @@
 | C1 | 定义核心数据类型/契约（Document/Chunk/ChunkRecord） | [x] | 2026-01-30 | Document/Chunk/ChunkRecord + 18个单元测试 |
 | C2 | 文件完整性检查（SHA256） | [x] | 2026-01-30 | FileIntegrityChecker + SQLiteIntegrityChecker + 25个单元测试 |
 | C3 | Loader 抽象基类与 PDF Loader | [x] | 2026-01-30 | BaseLoader + PdfLoader + PyMuPDF图片提取 + 21单元测试 + 9集成测试 |
+| C3.5 | 多格式 LoaderFactory 扩展 | [x] | 2026-07-02 | LoaderFactory + Markdown/TXT/HTML/DOCX/Code Loader + supported_extensions 配置 + TXT/MD dry-run E2E |
 | C4 | Splitter 集成（调用 Libs） | [x] | 2026-01-31 | DocumentChunker + 19个单元测试 + 5个核心增值功能 |
 | C5 | Transform 基类 + ChunkRefiner | [x] | 2026-01-31 | BaseTransform + ChunkRefiner (Rule + LLM) + TraceContext + 25单元测试 + 5集成测试 |
-| C6 | MetadataEnricher | [x] | 2026-01-31 | MetadataEnricher (Rule + LLM) + 26单元测试 + 真实LLM集成测试 |
+| C6 | MetadataEnricher | [x] | 2026-07-04 | 结构化 metadata schema + Rule/LLM JSON + SQLite 缓存 + 39个单元测试 |
 | C7 | ImageCaptioner | [x] | 2026-02-01 | ImageCaptioner + Azure Vision LLM 实现 + 集成测试 |
 | C8 | DenseEncoder | [x] | 2026-02-01 | 批量编码+Azure集成测试 |
 | C9 | SparseEncoder | [x] | 2026-02-01 | 词频统计+语料库统计+26单元测试 |
@@ -84,7 +85,7 @@
 | C12 | VectorUpserter（幂等upsert） | [x] | 2026-02-01 | 稳定chunk_id生成+幂等upsert+21单元测试 |
 | C13 | ImageStorage（图片存储+SQLite索引） | [x] | 2026-02-01 | ImageStorage + SQLite索引 + 37个单元测试 + WAL并发支持 |
 | C14 | Pipeline 编排（MVP 串起来） | [x] | 2026-02-02 | 完整流程编排+Azure LLM/Embedding集成测试通过 |
-| C15 | 脚本入口 ingest.py | [x] | 2026-02-02 | CLI脚本+E2E测试+文件发现+skip功能 |
+| C15 | 脚本入口 ingest.py | [x] | 2026-02-02 | CLI脚本+E2E测试+多格式文件发现+skip功能 |
 
 #### 阶段 D：Retrieval MVP
 
@@ -137,6 +138,8 @@
 | H1 | RagasEvaluator 实现 | [x] | 2026-02-09 | 19/19 tests passed |
 | H2 | CompositeEvaluator 实现 | [x] | 2026-02-09 | 11/11 tests passed |
 | H3 | EvalRunner + Golden Test Set | [x] | 2026-02-09 | 15/15 tests passed |
+| H3.5 | Ablation Evaluation | [x] | 2026-07-02 | dense/bm25/hybrid/hybrid_rerank + Recall/Precision/MRR/NDCG |
+| H3.6 | MMDocRAG Evaluation | [x] | 2026-07-03 | 多模态文档 QA 指标 + LLM Judge 可选 + citation/latency |
 | H4 | 评估面板页面 | [x] | 2026-02-09 | 6/6 tests passed, dashboard page with history tracking |
 | H5 | Recall 回归测试（E2E） | [x] | 2026-02-09 | 3 unit+4 e2e(skip without data), hit@k+MRR threshold gating |
 
@@ -215,15 +218,19 @@
   - `src/observability/logger.py`（先占位：提供 get_logger，stderr 输出）
   - `src/core/settings.py`（新增：集中放 Settings 数据结构与加载/校验逻辑）
   - `config/settings.yaml`（补齐字段：llm/embedding/vector_store/retrieval/rerank/evaluation/observability）
+  - `config/settings.example.yaml`（示例配置，使用环境变量占位符，不包含真实密钥）
+  - `.env.example`（本地环境变量示例，不包含真实密钥）
   - `tests/unit/test_config_loading.py`
+  - `tests/unit/test_settings_env.py`
 - **实现类/函数**：
   - `Settings`（dataclass：只做结构与最小校验；不在这里做任何网络/IO 的“业务初始化”）
-  - `load_settings(path: str) -> Settings`（读取 YAML -> 解析为 Settings -> 校验必填字段）
+  - `load_settings(path: str) -> Settings`（读取 YAML -> 展开 `${ENV_NAME:-default}` 环境变量占位符 -> 解析为 Settings -> 校验必填字段）
   - `validate_settings(settings: Settings) -> None`（把“必填字段检查”集中化，错误信息包含字段路径，例如 `embedding.provider`）
 - **验收标准**：
   - `main.py` 启动时能成功加载 `config/settings.yaml` 并拿到 `Settings` 对象。
   - 删除/缺失关键字段时（例如 `embedding.provider`），启动或 `load_settings()` 抛出“可读错误”（明确指出缺的是哪个字段）。
-- **测试方法**：`pytest -q tests/unit/test_config_loading.py`。
+  - `llm.api_key`、`embedding.api_key`、`vision_llm.api_key` 能从环境变量读取；仓库示例文件不包含真实 API Key。
+- **测试方法**：`pytest -q tests/unit/test_config_loading.py tests/unit/test_settings_env.py`。
 
 ---
 
@@ -499,6 +506,50 @@
   - 验证纯文本PDF能正常解析
   - 验证带图片PDF能提取图片并正确插入占位符
 
+### C3.5：多格式 LoaderFactory 扩展
+- **目标**：在保持 `PdfLoader` 原有行为不变的前提下，扩展 ingestion 文件入口，支持企业知识库常见文档与代码文件格式。
+- **支持格式**：
+  - 文档：`.pdf`、`.md`、`.txt`、`.html`、`.htm`、`.docx`
+  - 代码：`.py`、`.js`、`.java`
+  - 暂不默认支持旧版 `.doc` 二进制格式；如需摄取，先转换为 `.docx`
+- **修改文件**：
+  - `src/libs/loader/loader_factory.py`
+  - `src/libs/loader/markdown_loader.py`
+  - `src/libs/loader/text_loader.py`
+  - `src/libs/loader/html_loader.py`
+  - `src/libs/loader/docx_loader.py`
+  - `src/libs/loader/code_loader.py`
+  - `src/ingestion/pipeline.py`
+  - `scripts/ingest.py`
+  - `src/core/settings.py`
+  - `config/settings.yaml`
+  - `config/settings.example.yaml`
+  - `tests/unit/test_loader_factory.py`
+  - `tests/e2e/test_ingest_txt_md.py`
+- **实现类/函数**：
+  - `LoaderFactory.get_loader(file_path, settings=None, **kwargs) -> BaseLoader`
+  - `LoaderFactory.get_supported_extensions(settings=None) -> tuple[str, ...]`
+  - `UnsupportedFileTypeError`
+  - `MarkdownLoader.load(path) -> Document`
+  - `TextLoader.load(path) -> Document`
+  - `HtmlLoader.load(path) -> Document`
+  - `DocxLoader.load(path) -> Document`
+  - `CodeLoader.load(path) -> Document`
+- **配置项**：
+  - `ingestion.supported_extensions`：可配置允许摄取的文件后缀列表，默认值为上述支持格式。
+  - CLI 目录扫描必须使用该配置过滤文件，避免把临时文件、二进制文件或不支持格式送入 Pipeline。
+- **验收标准**：
+  - `.pdf` 仍然由 `PdfLoader` 处理，图片提取与 `[IMAGE: ...]` 占位符契约不变。
+  - `.md` 保留 Markdown 结构，标题优先来自第一个一级标题。
+  - `.txt` 以纯文本读取，保留原始文本内容。
+  - `.html` / `.htm` 去除 `script/style/noscript` 后提取正文文本，标题优先来自 `<title>` 或 `<h1>`。
+  - `.docx` 提取段落与表格文本，表格可转换为 Markdown 表格。
+  - `.py` / `.js` / `.java` 保留代码文本，并在 metadata 中记录语言信息。
+  - 不支持的扩展名抛出清晰错误，并在 CLI 中返回用户可理解的提示。
+- **测试方法**：
+  - `pytest -q tests/unit/test_loader_factory.py`
+  - `pytest -q tests/e2e/test_ingest_txt_md.py`
+
 ### C4：Splitter 集成（调用 Libs）
 - **目标**：实现 Chunking 模块作为 `libs.splitter` 和 Ingestion Pipeline 之间的**适配器层**，完成 Document→Chunks 的业务对象转换。
 - **核心职责（DocumentChunker 相比 libs.splitter 的增值）**：
@@ -607,16 +658,45 @@
     - 集成测试：验证系统可用性
     - 两者互补，缺一不可
 
-### C6：MetadataEnricher（规则增强 + 可选 LLM 增强 + 降级）
-- **目标**：实现元数据增强模块：提供规则增强的默认实现，并重点支持 LLM 增强（配置已就绪，LLM 开关打开）。利用 LLM 对 chunk 进行高质量的 title 生成、summary 摘要和 tags 提取。同时保留失败降级机制，确保不阻塞 ingestion。
+### C6：MetadataEnricher（结构化 metadata + 可选 LLM JSON 增强 + 缓存 + 降级）
+- **目标**：将 chunk 级 metadata 从基础 `title/summary/tags` 扩展为可检索、可过滤、可评测的结构化 schema。默认使用规则抽取，不依赖 LLM；开启 LLM 时要求 JSON 输出并做 schema 校验，解析失败、调用失败或预算超限时回退到规则结果，确保 ingestion 不被单个 chunk 阻塞。
+- **结构化字段**：
+  - `title`、`summary`、`tags`
+  - `section_path`、`heading_path`、`page_range`
+  - `table_ids`、`image_ids`
+  - `entities`、`questions`
+  - `enrichment_method`、`enrichment_cached`
+  - 为 Chroma metadata 兼容性额外提供 `*_text` companion 字段，如 `tags_text`、`heading_path_text`、`page_range_text`
+- **配置设计**：
+  - 推荐使用新配置块 `ingestion.metadata_enrichment`
+  - 兼容旧配置块 `ingestion.metadata_enricher`
+  - 默认值：`use_llm=false`、`cache_enabled=true`、`max_tokens_per_chunk=1200`、`max_concurrency=3`、`budget_usd_per_run=2.0`、`output_schema=json`、`fallback_to_rule_based=true`、`generate_questions=true`、`extract_entities=true`
+- **关键实现**：
+  - 规则抽取：从 Markdown 标题、页码 metadata、`[TABLE: ...]`、`[IMAGE: ...]`、版本号、HTTP 错误码、API 路径、代码符号等信息生成结构化字段。
+  - LLM JSON：使用 `config/prompts/metadata_enrichment_json.txt` 要求模型返回单个 JSON object，支持 fenced JSON 解析并做字段归一化。
+  - 缓存：通过 `data/cache/metadata_enrichment_cache.sqlite` 保存 enrichment 结果，key 由 `chunk_id + text_hash + config_hash` 组成，重复处理时直接命中。
+  - 并发与预算：LLM 模式下按 `max_concurrency` 并发处理，并用 `budget_usd_per_run` 做单次运行预算保护。
 - **修改文件**：
   - `src/ingestion/transform/metadata_enricher.py`
+  - `src/ingestion/transform/metadata_schema.py`
+  - `src/ingestion/transform/metadata_cache.py`
+  - `src/ingestion/transform/entity_extractor.py`
+  - `src/ingestion/transform/question_generator.py`
+  - `config/prompts/metadata_enrichment_json.txt`
   - `tests/unit/test_metadata_enricher_contract.py`
+  - `tests/unit/test_metadata_enricher_schema.py`
+  - `tests/unit/test_metadata_enricher_rule_based.py`
+  - `tests/unit/test_metadata_enricher_cache.py`
+  - `tests/unit/test_metadata_enricher_llm_json.py`
 - **验收标准**：
-  - 规则模式：作为兜底逻辑，输出 metadata 必须包含 `title/summary/tags`（至少非空）。
-  - **LLM 模式（核心）**：在 LLM 打开的情况下，确保真实调用 LLM（或高质量 Mock）并生成语义丰富的 metadata。需验证在有真实 LLM 配置下的连通性与效果。
-  - 降级行为：LLM 调用失败时回退到规则模式结果（可在 metadata 标记降级原因，但不抛出致命异常）。
-- **测试方法**：`pytest -q tests/unit/test_metadata_enricher_contract.py`，并确保包含开启 LLM 的集成测试用例。
+  - 规则模式：输出完整结构化 schema，且能抽取 heading/page/table/image/entity/question。
+  - LLM 模式：能解析 JSON 或 fenced JSON，并与规则字段合并；无效输出时回退到规则结果。
+  - 缓存：相同 chunk 与配置命中缓存；文本或配置变化时缓存失效。
+  - 兼容性：保留 `enriched_by`、旧版 `Title/Summary/Tags` 解析和旧配置入口。
+- **测试方法**：
+  ```bash
+  pytest -q tests/unit/test_metadata_enricher_schema.py tests/unit/test_metadata_enricher_rule_based.py tests/unit/test_metadata_enricher_cache.py tests/unit/test_metadata_enricher_llm_json.py tests/unit/test_metadata_enricher_contract.py
+  ```
 
 ### C7：ImageCaptioner（可选生成 caption + 降级不阻塞）
 - **目标**：实现 `image_captioner.py`：当启用 Vision LLM 且存在 image_refs 时生成 caption 并写回 chunk metadata；当禁用/不可用/异常时走降级路径，不阻塞 ingestion。
@@ -743,11 +823,11 @@
 - **测试方法**：`pytest -v tests/integration/test_ingestion_pipeline.py`。
 
 ### C15：脚本入口 ingest.py（离线可用）
-- **目标**：实现 `scripts/ingest.py`，支持 `--collection`、`--path`、`--force`，并调用 pipeline。
+- **目标**：实现 `scripts/ingest.py`，支持 `--collection`、`--path`、`--force`，基于 `LoaderFactory` 和 `ingestion.supported_extensions` 发现可摄取文件，并调用 pipeline。
 - **修改文件**：
   - `scripts/ingest.py`
   - `tests/e2e/test_data_ingestion.py`
-- **验收标准**：命令行可运行并在 `data/db` 产生产物；重复运行在未变更时跳过。
+- **验收标准**：命令行可运行并在 `data/db` 产生产物；目录扫描只处理支持扩展名；重复运行在未变更时跳过。
 - **测试方法**：`pytest -q tests/e2e/test_data_ingestion.py`（尽量用临时目录）。
 
 ---
@@ -1170,6 +1250,66 @@
   ```
 - **验收标准**：`python scripts/evaluate.py` 可运行，输出 metrics。
 - **测试方法**：`pytest -q tests/integration/test_hybrid_search.py` 或 `python scripts/evaluate.py`。
+
+### H3.5 / Task 4：Ablation Evaluation
+- **目标**：新增消融评估脚本，对比 dense、bm25、hybrid、hybrid_rerank 四种检索模式，量化不同召回/精排策略对 IR 指标的影响。
+- **前置依赖**：D2（DenseRetriever）、D3（SparseRetriever）、D5（HybridSearch）、D6（Reranker）、H3（Golden Test Set）。
+- **修改文件**：
+  - `scripts/run_ablation_eval.py`（新增：消融评估 CLI）
+  - `src/observability/evaluation/ir_metrics.py`（新增：IR 指标纯函数）
+  - `tests/unit/test_ir_metrics.py`（新增：指标单元测试）
+  - `README.md`、`DEV_SPEC.md`（补充说明）
+- **实现类/函数**：
+  - `recall_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `precision_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `mrr_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `ndcg_at_k(retrieved_ids, relevant_ids, k) -> float`
+  - `evaluate_ranking_at_k(...) -> dict[str, float]`
+  - `scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --top-k 10 --markdown`
+- **输出格式**：
+  - JSON：保存到 `eval/results/{timestamp}.json`，包含运行配置、每个 mode 的聚合指标、逐 query 检索结果与耗时。
+  - Markdown：开启 `--markdown` 时输出同名 `.md` 表格，并打印到终端。
+- **验收标准**：
+  - 四种模式均可通过 CLI 选择运行。
+  - 支持 `expected_chunk_ids` 的 chunk 级评估，以及 `expected_sources` 的来源级评估。
+  - 未标注相关文档的 query 标记为 skipped，不参与聚合指标。
+- **测试方法**：`pytest -q tests/unit/test_ir_metrics.py`，并执行 `python -m py_compile scripts/run_ablation_eval.py src/observability/evaluation/ir_metrics.py`。
+
+### H3.6 / Task 5：MMDocRAG Evaluation
+- **目标**：新增多模态文档 RAG 评测脚本，在不大幅改动主链路的前提下，对检索质量、多模态证据召回、答案正确性、忠实度、引用可靠性和工程延迟进行端到端量化。
+- **前置依赖**：D2（DenseRetriever）、D3（SparseRetriever）、D5（HybridSearch）、D6（Reranker）、H3.5（Ablation Evaluation）。
+- **修改文件**：
+  - `scripts/run_mmdocrag_eval.py`（新增：MMDocRAG 评测 CLI）
+  - `src/observability/evaluation/multimodal_metrics.py`
+  - `src/observability/evaluation/generation_metrics.py`
+  - `src/observability/evaluation/citation_metrics.py`
+  - `tests/fixtures/mmdocrag_golden_test_set.json`
+  - `tests/unit/test_multimodal_metrics.py`
+  - `tests/unit/test_generation_metrics.py`
+  - `tests/unit/test_citation_metrics.py`
+  - `README.md`、`DEV_SPEC.md`（补充说明）
+- **新增 optional schema 字段**：
+  - `question_type`
+  - `reference_answer`
+  - `expected_pages`
+  - `expected_modalities`
+  - `expected_evidence`
+- **实现指标**：
+  - Retrieval Quality：`recall@k`、`ndcg@k`
+  - Multimodal Capability：`modality_recall@k`、`image_hit@k`、`table_hit@k`
+  - Answer Quality：`answer_correctness`（可选 LLM-as-Judge）
+  - Reliability：`faithfulness`（可选 LLM-as-Judge）、`citation_accuracy`
+  - Engineering Efficiency：`retrieval_latency_ms`、`generation_latency_ms`、`end_to_end_latency_ms`
+- **输出格式**：
+  - JSON：保存到 `eval/results/{timestamp}_mmdocrag.json`，包含每个 mode 的 aggregate metrics 与 query-level 明细。
+  - Markdown：开启 `--markdown` 时输出同名 `.md` 汇总表。
+- **验收标准**：
+  - 旧 `golden_test_set.json` 和 `scripts/run_ablation_eval.py` 不受影响。
+  - 所有新增 schema 字段均为 optional；缺失标注时对应指标跳过，不参与平均值。
+  - 未开启 LLM Judge 或无 API Key 时，`answer_correctness` 与 `faithfulness` 自动跳过，不影响检索、多模态和引用指标。
+- **测试方法**：
+  - `pytest -q tests/unit/test_multimodal_metrics.py tests/unit/test_generation_metrics.py tests/unit/test_citation_metrics.py`
+  - `python -m py_compile scripts/run_mmdocrag_eval.py src/observability/evaluation/multimodal_metrics.py src/observability/evaluation/generation_metrics.py src/observability/evaluation/citation_metrics.py`
 
 ### H4：评估面板页面
 - **目标**：实现 Dashboard 评估面板页面（运行评估、查看指标、历史对比）。
