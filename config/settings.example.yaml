@@ -118,6 +118,40 @@ security:
   acl:
     enabled: true
 
+api:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000
+  environment: "development"
+  auth:
+    mode: "local-dev"
+    allow_local_dev_without_auth: true
+    jwt:
+      algorithm: "HS256"
+      secret: "${JWT_SECRET:-}"
+      issuer: "${JWT_ISSUER:-rag-api}"
+      audience: "${JWT_AUDIENCE:-rag-clients}"
+      leeway_seconds: 30
+  rate_limit:
+    enabled: true
+    backend: "memory"
+    tenant:
+      requests: 120
+      window_seconds: 60
+    user:
+      requests: 60
+      window_seconds: 60
+  limits:
+    max_request_body_bytes: 10485760
+  timeout:
+    query_seconds: 30
+    retrieval_seconds: 8
+    rerank_seconds: 10
+    llm_seconds: 20
+    ingestion_seconds: 300
+  mcp_gateway:
+    enabled: true
+
 performance:
   query_cache:
     enabled: true

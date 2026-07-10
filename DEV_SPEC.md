@@ -1122,6 +1122,91 @@ Hybrid Search 命中 Chunk（正文含 "[图片描述: 系统采用三层架构.
 
 `logs/traces.jsonl` 只保存安全 debug trace，默认不保存完整文档、chunk、prompt 或 API Key；`logs/operational.jsonl` 保存低基数运行字段；`logs/audit.jsonl` 独立保存租户、用户 hash、工具、资源、document_id、权限拒绝和成功状态。`src/observability/redaction.py` 负责 PII/secret/path 脱敏，`TraceService.delete_trace()` 提供单条 debug trace 删除接口，retention 配置负责轮转和过期清理。Dashboard 只展示 `trace_id/stage/duration/status/error_code/document_id/chunk_id/redacted_preview`。
 
+## 3.6.1 P1 生产 API、MCP HTTP Gateway 与限流模块
+
+### 现状检查与增量策略
+
+P1 开始前对现有实现做了逐项检查：
+
+| 能力 | 结论 | 处理方式 |
+|---|---|---|
+| `RequestContext`、tenant/ACL | `partially_implemented` | 复用 `src/security/context.py`、`policy.py`、`acl_filter.py`，补齐 API transport 字段和边界适配 |
+| stdio MCP server、tool schema | `already_implemented` | 保留 `main.py`、`server.py`、`ProtocolHandler` 和三个既有 tool，不重写 |
+| document version store、ingestion task queue | `already_implemented` | API service 通过 facade/adapter 复用；版本接口在未配置 store 时明确返回 `NOT_IMPLEMENTED` |
+| REST API、FastAPI 入口、health、HTTP Gateway、限流、body limit、统一 API error | `missing` | 新增 `src/api/` 与 HTTP MCP adapter |
+
+### 分层结构
+
+P1 的 HTTP 边界只负责协议解析、Pydantic 参数校验、上下文注入、错误转换和超时包装；业务逻辑位于 core service：
+
+- `src/api/app.py`：FastAPI `create_app()` factory、middleware 组装和 uvicorn app 对象。
+- `src/api/middleware/`：`RequestContextMiddleware`、`AuthenticationMiddleware`、`RateLimitMiddleware`、`BodyLimitMiddleware`、超时辅助函数。
+- `src/api/routes/`：REST query/documents/collections/ingestion、health 和 MCP Gateway 路由。
+- `src/api/errors.py`：统一 `APIError` 与安全错误响应。
+- `src/core/query_service.py`、`document_service.py`、`collection_service.py`、`ingestion_service.py`、`permission_service.py`：REST 与 MCP Gateway 的共享 service facade。
+
+### API 契约
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/health/live` | 只表示进程存活，不检查外部依赖 |
+| GET | `/health/ready` | 检查配置和可注入的本地依赖；失败返回 503，不调用真实 LLM/Embedding |
+| POST | `/v1/query` | `query/top_k/collection_id/use_rerank/use_llm/filters`，返回 answer/citations/chunks/latency_ms |
+| POST | `/v1/documents` | 创建文档元数据；带 content 时通过 ingestion service 提交异步 job |
+| GET/DELETE | `/v1/documents/{document_id}` | 租户校验后查询/删除，不直接绕过 DocumentManager |
+| GET | `/v1/collections` | 只列出当前 tenant 的 collection |
+| POST/GET | `/v1/ingestion/jobs`、`/{job_id}` | 创建、查询本地 task queue job，job 查询校验 tenant |
+| GET/POST | `/v1/documents/{document_id}/versions`、`rollback` | 复用 version store；未配置时返回 501 |
+
+### RequestContext、认证与权限
+
+`RequestContext` 现在包含 `request_id`、`trace_id`、`tenant_id`、`user_id`、`roles`、`auth_source/auth_mode`、`client_host` 和 `user_agent`。请求优先透传 `X-Request-ID`，没有则生成 UUID；`X-Trace-ID` 缺省使用 request ID。原始 Authorization/JWT 不进入日志或错误响应。
+
+- `local-dev`：仅允许 development/test；从 `X-Tenant-ID`、`X-User-ID`、`X-Roles` 读取身份，缺失时使用 `local/local-dev-user/admin`。
+- `jwt`：读取 `Authorization: Bearer`，校验 HS256 签名、`exp`、issuer、audience，并从 claims 注入 tenant/user/roles。
+- `production`：启动时拒绝 `api.auth.mode=local-dev`，缺少 token、token 无效或过期分别返回 `AUTH_REQUIRED`、`INVALID_TOKEN`、`TOKEN_EXPIRED`。
+- `PermissionService` 先校验身份，再比较资源 tenant；REST 和 MCP Gateway 都不能通过参数覆盖可信上下文。
+
+### 限流、请求体和超时
+
+默认内存 backend 按 `tenant:{tenant_id}` 和 `user:{user_id}` 计数，key 不包含 JWT/API Key；触发时返回 429、`RATE_LIMITED` 和 `Retry-After`。`RateLimiterBackend` 抽象预留了 `RedisRateLimiterBackend`，但项目不强制依赖 Redis。
+
+`max_request_body_bytes` 在 middleware 层先检查 Content-Length，并为 chunked body 做累计字节限制，超限返回 413。`run_with_timeout()` 使用 `asyncio.wait_for` 取消下游任务；TimeoutError 转成 `RETRIEVAL_TIMEOUT`、`RERANK_TIMEOUT`、`LLM_TIMEOUT` 或 `INGESTION_TIMEOUT`，CancelledError 原样传播。
+
+### 统一错误与安全响应
+
+所有预期错误返回：
+
+```json
+{
+  "request_id": "...",
+  "error_code": "TENANT_MISMATCH",
+  "message": "The resource belongs to another tenant",
+  "retryable": false
+}
+```
+
+主要映射：认证 401；权限 403；参数 400；资源不存在 404；body 超限 413；限流 429；阶段超时 504；未实现 501；未知异常 500。未知异常只返回 `INTERNAL_ERROR`，不暴露 token、API Key、内部路径和完整堆栈。
+
+### MCP HTTP Gateway
+
+Gateway 提供 `/mcp/tools`、`/mcp/tools/call` 和 `/mcp` JSON-RPC 2.0，同时提供 `/v1/mcp` 别名。tool schema 优先从现有 stdio `ProtocolHandler` 注册表读取，因 REST-only 环境未安装 MCP SDK 时使用等价的只读 schema fallback；实际 stdio server 的入口和行为不变。
+
+Gateway 执行 `query_knowledge_hub`、`list_collections`、`get_document_summary` 时转调相同的 `QueryService`、`CollectionService`、`DocumentService`，并传入同一个 `RequestContext`，因此 tenant mismatch、错误码和 request/trace ID 与 REST API 一致。
+
+### 配置与运行
+
+新增配置位于 `config/settings.yaml` 的 `api` 块：`api.auth`、`api.rate_limit`、`api.limits`、`api.timeout` 和 `api.mcp_gateway`；生产密钥仅通过环境变量注入。运行方式：
+
+```powershell
+python scripts/start_api.py
+# 或
+uvicorn src.api.app:app --host 0.0.0.0 --port 8000
+python -m pytest -q tests/api
+```
+
+P1 新增测试使用 fake service、monkeypatch/内存 backend，不依赖真实 LLM、Embedding、外部 HTTP、Redis 或 MCP transport。完整 version/rollback 只有在注入现有 version store 后才启用，当前仅保留清晰的 NOT_IMPLEMENTED 接口。
+
 ## 4. 测试方案
 
 ### 4.1 设计理念：测试驱动开发 (TDD)
@@ -2009,6 +2094,8 @@ dashboard:
    - 目的：实现 RagasEvaluator + CompositeEvaluator + EvalRunner，启用评估面板页面，建立 golden test set 回归基线。
 9. **阶段 I：端到端验收与文档收口**
    - 目的：补齐 E2E 测试（MCP Client 模拟 + Dashboard 冒烟），完善 README，全链路验收，确保“开箱即用 + 可复现”。
+10. **阶段 P1：生产 API、MCP HTTP Gateway 与限流模块**
+   - 目的：在不破坏 stdio MCP 的前提下，增加可通过 HTTP 安全调用的 REST API、MCP Gateway、鉴权、租户隔离、限流、请求保护和统一错误边界。
 
 
 ---
@@ -2135,6 +2222,19 @@ dashboard:
 | I4 | 清理接口一致性（契约测试补齐） | [x] | 2026-02-24 | VectorStore+Reranker+Evaluator边界测试+83测试全绿 |
 | I5 | 全链路 E2E 验收 | [x] | 2026-02-24 | 1198单元+30e2e通过,ingest/query/evaluate脚本验证 |
 
+#### 阶段 P1：生产 API、MCP HTTP Gateway 与限流模块
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| P1.1 | REST API app、health、query、document、collection、ingestion 路由 | [x] | 2026-07-11 | FastAPI factory + Pydantic schemas + core service facade |
+| P1.2 | RequestContext 与 JWT/local-dev 鉴权 | [x] | 2026-07-11 | 复用 `src/security/context.py`，补齐 transport 字段和 HS256 校验 |
+| P1.3 | 统一权限 service 与租户隔离 | [x] | 2026-07-11 | REST/MCP Gateway 共用 `PermissionService` |
+| P1.4 | 统一错误响应与 health live/ready | [x] | 2026-07-11 | request_id、error_code、retryable；ready 不调用真实 LLM |
+| P1.5 | 内存 per-tenant/per-user 限流、body limit、超时控制 | [x] | 2026-07-11 | Redis backend 预留接口；取消传播保持安全 |
+| P1.6 | MCP HTTP Gateway | [x] | 2026-07-11 | 复用 stdio `ProtocolHandler` tool schema，支持 JSON-RPC 与 tools/call |
+| P1.7 | API 配置与启动脚本 | [x] | 2026-07-11 | `config/settings*.yaml`、`scripts/start_api.py`、依赖清单 |
+| P1.8 | API 安全/一致性测试与文档 | [x] | 2026-07-11 | `tests/api` 6 项测试；不依赖 Redis、外部 API、真实 LLM |
+
 ---
 
 ### 📈 总体进度
@@ -2150,7 +2250,8 @@ dashboard:
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| **总计** | **68** | **68** | **100%** |
+| 阶段 P1 | 8 | 8 | 100% |
+| **总计** | **76** | **76** | **100%** |
 
 
 ---

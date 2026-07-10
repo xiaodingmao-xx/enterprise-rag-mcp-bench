@@ -9,6 +9,7 @@
 - [项目概述](#-项目概述)
 - [分支说明](#-分支说明)
 - [快速开始](#-快速开始)
+- [P1 生产 API 与 MCP HTTP Gateway](#p1-生产-api-与-mcp-http-gateway)
 - [谁适合用这个项目 & 怎么用](#-谁适合用这个项目--怎么用)
 - [简历参考](#-简历参考)
 - [常见问题](#-常见问题)
@@ -42,6 +43,7 @@
 | **Ingestion Pipeline** | 多格式文档 → Chunk → Transform → Embedding → Upsert | 支持 PDF / Markdown / TXT / HTML / DOCX / 代码文件摄取，注入结构化 metadata，PDF 保留多模态图片描述（Image Captioning） |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
 | **MCP Server** | 标准 MCP 协议暴露 Tools | `query_knowledge_hub`、`list_collections`、`get_document_summary` |
+| **P1 Production API** | REST API + MCP HTTP Gateway + 生产边界 | JWT/local-dev、RequestContext、租户/用户限流、body limit、分阶段超时、统一错误响应、health live/ready |
 | **Dashboard** | Streamlit 六页面管理平台 | 系统总览 / 数据浏览 / Ingestion 管理 / 摄取追踪 / 查询追踪 / 评估面板 |
 | **Evaluation** | Ragas + Custom + MMDocRAG 评估体系 | 支持 golden test set 回归测试、消融实验和多模态文档 QA 指标，拒绝"凭感觉"调优 |
 | **Observability** | 全链路白盒化追踪 | Ingestion 与 Query 两条链路的每一个中间状态透明可见 |
@@ -69,7 +71,7 @@
 
 ## 🔐 多租户与企业文档 ACL
 
-项目现在提供统一的 `RequestContext` 和 `DocumentACL` 权限模型。每次请求都绑定 `request_id/trace_id/tenant_id/user_id/roles/department/auth_source`，工具参数不能覆盖可信身份：
+项目现在提供统一的 `RequestContext` 和 `DocumentACL` 权限模型。每次请求都绑定 `request_id/trace_id/tenant_id/user_id/roles/department/auth_source/auth_mode/client_host/user_agent`，工具参数不能覆盖可信身份：
 
 - `local-dev` 模式自动注入 `security.default_local_tenant` 与 `security.default_local_user`，便于本地单用户运行。
 - `production` 模式要求已验证 JWT/OIDC 上下文；缺少认证或 `tenant_id` 的请求默认拒绝。
@@ -261,6 +263,78 @@ python scripts/run_mmdocrag_eval.py ^
 输出会保存到 `eval/results/{timestamp}_mmdocrag.json`；传入 `--markdown` 时，会额外保存 Markdown 汇总表。核心指标包括 `recall@k`、`ndcg@k`、`modality_recall@k`、`image_hit@k`、`table_hit@k`、`answer_correctness`、`faithfulness`、`citation_accuracy` 和平均 latency。
 
 LLM-as-Judge 指标是可选的：未传入 `--enable-llm-judge`、LLM 未配置或 API Key 缺失时，`answer_correctness` 与 `faithfulness` 会自动跳过，不影响检索和多模态指标运行。
+
+## P1 生产 API 与 MCP HTTP Gateway
+
+P1 在保留原有 stdio MCP 入口的同时增加 HTTP 服务层。REST 路由和 MCP Gateway 共享同一组 core service、`RequestContext`、租户权限检查、错误码和 trace/request ID。
+
+### 启动 API 服务
+
+```bash
+python scripts/start_api.py
+# 或
+uvicorn src.api.app:app --host 0.0.0.0 --port 8000
+```
+
+默认开发配置使用 `local-dev` 鉴权，可通过请求头指定租户和用户：
+
+```bash
+curl http://localhost:8000/health/live
+curl -H "X-Tenant-ID: team-a" -H "X-User-ID: alice" http://localhost:8000/v1/collections
+curl -X POST http://localhost:8000/v1/query `
+  -H "Content-Type: application/json" `
+  -d '{"query":"项目的部署要求是什么？","top_k":5}'
+```
+
+生产环境必须将 `api.environment` 设为 `production`，并将 `api.auth.mode` 设为 `jwt`。JWT 使用 HS256 时至少包含 `sub`/`user_id`、`tenant_id`、`roles`、`iss`、`aud`、`exp`；密钥只从环境变量注入：
+
+```yaml
+api:
+  environment: production
+  auth:
+    mode: jwt
+    jwt:
+      secret: "${JWT_SECRET:-}"
+      issuer: "${JWT_ISSUER:-rag-api}"
+      audience: "${JWT_AUDIENCE:-rag-clients}"
+```
+
+### API 路由
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/health/live` | 仅检查进程存活 |
+| GET | `/health/ready` | 检查配置/依赖是否可接流量，不调用真实 LLM |
+| POST | `/v1/query` | 租户过滤的查询与引用返回 |
+| POST/GET/DELETE | `/v1/documents`、`/v1/documents/{document_id}` | 文档创建、查询、删除 |
+| GET | `/v1/collections` | 当前租户可见集合 |
+| POST/GET | `/v1/ingestion/jobs`、`/v1/ingestion/jobs/{job_id}` | 复用本地 ingestion task queue |
+| GET/POST | `/v1/documents/{document_id}/versions`、`rollback` | 版本能力已预留，未配置 version store 时返回 `NOT_IMPLEMENTED` |
+
+### MCP HTTP Gateway
+
+Gateway 从现有 stdio `ProtocolHandler` 获取 tool schema，支持：
+
+```text
+GET  /mcp/tools
+POST /mcp/tools/call       {"name":"query_knowledge_hub","arguments":{...}}
+POST /mcp                   JSON-RPC 2.0 tools/list / tools/call
+```
+
+也提供 `/v1/mcp` 和 `/v1/mcp/tools/*` 别名。Gateway 不直接执行另一套检索逻辑，而是将 `query_knowledge_hub`、`list_collections`、`get_document_summary` 转发到 REST 共用的 core service，并经过同一套租户授权。
+
+### 限流、超时与错误
+
+- `api.rate_limit` 默认使用内存 backend，分别按 `tenant_id` 和 `user_id` 限流；Redis backend 仅保留接口，不是必需依赖。
+- `api.limits.max_request_body_bytes` 在 middleware 层限制请求体，超限返回 `413 / REQUEST_TOO_LARGE`。
+- `api.timeout` 提供 query、retrieval、rerank、LLM、ingestion 超时；取消会向下游传播，不吞掉 `CancelledError`。
+- 错误统一为 `request_id/error_code/message/retryable`，不会返回 token、API Key、绝对路径或完整堆栈。
+
+新增 API 测试不依赖 Redis、外部 API 或真实 LLM：
+
+```bash
+python -m pytest -q tests/api
+```
 
 ---
 

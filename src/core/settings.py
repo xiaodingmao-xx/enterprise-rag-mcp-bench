@@ -295,6 +295,65 @@ class SecuritySettings:
 
 
 @dataclass(frozen=True)
+class APIRateLimitRule:
+    requests: int = 120
+    window_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class APIRateLimitSettings:
+    enabled: bool = True
+    backend: str = "memory"
+    tenant: APIRateLimitRule = field(default_factory=APIRateLimitRule)
+    user: APIRateLimitRule = field(
+        default_factory=lambda: APIRateLimitRule(requests=60, window_seconds=60)
+    )
+
+
+@dataclass(frozen=True)
+class APILimitsSettings:
+    max_request_body_bytes: int = 10 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class APITimeoutSettings:
+    query_seconds: float = 30.0
+    retrieval_seconds: float = 8.0
+    rerank_seconds: float = 10.0
+    llm_seconds: float = 20.0
+    ingestion_seconds: float = 300.0
+
+
+@dataclass(frozen=True)
+class APIAuthSettings:
+    mode: str = "local-dev"
+    allow_local_dev_without_auth: bool = True
+    algorithm: str = "HS256"
+    secret: str = ""
+    issuer: str = "rag-api"
+    audience: str = "rag-clients"
+    leeway_seconds: int = 30
+
+
+@dataclass(frozen=True)
+class APIMCPGatewaySettings:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class APISettings:
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8000
+    environment: str = "development"
+    auth: APIAuthSettings = field(default_factory=APIAuthSettings)
+    rate_limit: APIRateLimitSettings = field(default_factory=APIRateLimitSettings)
+    limits: APILimitsSettings = field(default_factory=APILimitsSettings)
+    timeout: APITimeoutSettings = field(default_factory=APITimeoutSettings)
+    mcp_gateway: APIMCPGatewaySettings = field(default_factory=APIMCPGatewaySettings)
+
+
+@dataclass(frozen=True)
 class ObservabilitySettings:
     log_level: str
     trace_enabled: bool
@@ -410,6 +469,7 @@ class Settings:
     vision_llm: Optional[VisionLLMSettings] = None
     performance: PerformanceSettings = field(default_factory=PerformanceSettings)
     response: ResponseSettings = field(default_factory=ResponseSettings)
+    api: APISettings = field(default_factory=APISettings)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Settings":
@@ -638,6 +698,100 @@ class Settings:
             acl=ACLSettings(enabled=bool(security_acl.get("enabled", True))),
         )
 
+        # P1 production API settings are intentionally optional so existing
+        # stdio/dashboard configurations remain valid.  Nested API settings
+        # take precedence, while the top-level aliases are accepted for
+        # backwards-compatible hand-written YAML files.
+        api_data = _optional_mapping(data.get("api"))
+
+        def _api_mapping(name: str) -> Dict[str, Any]:
+            nested = api_data.get(name)
+            if isinstance(nested, dict):
+                return nested
+            legacy = data.get(name)
+            return legacy if isinstance(legacy, dict) else {}
+
+        api_auth = _api_mapping("auth")
+        api_jwt = _optional_mapping(api_auth.get("jwt"))
+        api_rate_limit = _api_mapping("rate_limit")
+        api_tenant_limit = _optional_mapping(api_rate_limit.get("tenant"))
+        api_user_limit = _optional_mapping(api_rate_limit.get("user"))
+        api_limits = _api_mapping("limits")
+        api_timeout = _api_mapping("timeout")
+        api_gateway = _api_mapping("mcp_gateway")
+        api_environment = str(
+            api_data.get("environment", observability_environment)
+            or observability_environment
+        ).strip().lower()
+        api_auth_mode = str(
+            api_auth.get("mode", security_settings.mode) or security_settings.mode
+        ).strip().lower()
+        api_settings = APISettings(
+            enabled=bool(api_data.get("enabled", True)),
+            host=str(api_data.get("host", "0.0.0.0")),
+            port=_int_or_default(api_data.get("port"), 8000, 1),
+            environment=api_environment,
+            auth=APIAuthSettings(
+                mode=api_auth_mode,
+                allow_local_dev_without_auth=bool(
+                    api_auth.get("allow_local_dev_without_auth", True)
+                ),
+                algorithm=str(
+                    api_jwt.get("algorithm", api_auth.get("algorithm", "HS256"))
+                ).upper(),
+                secret=str(
+                    api_jwt.get(
+                        "secret",
+                        api_auth.get("secret", os.environ.get("JWT_SECRET", "")),
+                    )
+                ),
+                issuer=str(api_jwt.get("issuer", api_auth.get("issuer", "rag-api"))),
+                audience=str(
+                    api_jwt.get("audience", api_auth.get("audience", "rag-clients"))
+                ),
+                leeway_seconds=_int_or_default(
+                    api_jwt.get("leeway_seconds", api_auth.get("leeway_seconds", 30)),
+                    30,
+                    0,
+                ),
+            ),
+            rate_limit=APIRateLimitSettings(
+                enabled=bool(api_rate_limit.get("enabled", True)),
+                backend=str(api_rate_limit.get("backend", "memory")).lower(),
+                tenant=APIRateLimitRule(
+                    requests=_int_or_default(api_tenant_limit.get("requests"), 120, 1),
+                    window_seconds=_int_or_default(
+                        api_tenant_limit.get("window_seconds"), 60, 1
+                    ),
+                ),
+                user=APIRateLimitRule(
+                    requests=_int_or_default(api_user_limit.get("requests"), 60, 1),
+                    window_seconds=_int_or_default(
+                        api_user_limit.get("window_seconds"), 60, 1
+                    ),
+                ),
+            ),
+            limits=APILimitsSettings(
+                max_request_body_bytes=_int_or_default(
+                    api_limits.get("max_request_body_bytes"), 10 * 1024 * 1024, 1
+                )
+            ),
+            timeout=APITimeoutSettings(
+                query_seconds=_float_or_default(api_timeout.get("query_seconds"), 30.0, 0.001),
+                retrieval_seconds=_float_or_default(
+                    api_timeout.get("retrieval_seconds"), 8.0, 0.001
+                ),
+                rerank_seconds=_float_or_default(
+                    api_timeout.get("rerank_seconds"), 10.0, 0.001
+                ),
+                llm_seconds=_float_or_default(api_timeout.get("llm_seconds"), 20.0, 0.001),
+                ingestion_seconds=_float_or_default(
+                    api_timeout.get("ingestion_seconds"), 300.0, 0.001
+                ),
+            ),
+            mcp_gateway=APIMCPGatewaySettings(enabled=bool(api_gateway.get("enabled", True))),
+        )
+
         settings = cls(
             llm=LLMSettings(
                 provider=_require_str(llm, "provider", "llm"),
@@ -769,6 +923,7 @@ class Settings:
             vision_llm=vision_llm_settings,
             performance=performance_settings,
             response=response_settings,
+            api=api_settings,
         )
 
         return settings
@@ -804,6 +959,13 @@ def validate_settings(settings: Settings) -> None:
             raise SettingsError("production mode requires observability.redaction.enabled=true")
         if settings.observability.trace.include_prompt:
             raise SettingsError("production mode forbids observability.trace.include_prompt=true")
+    if settings.api.auth.mode not in {"local-dev", "development", "jwt", "production", "prod"}:
+        raise SettingsError("api.auth.mode must be local-dev or jwt")
+    if settings.api.environment in {"production", "prod"} and settings.api.auth.mode in {
+        "local-dev",
+        "development",
+    }:
+        raise SettingsError("production API cannot use local-dev authentication")
 
 
 def load_settings(path: str | Path | None = None) -> Settings:

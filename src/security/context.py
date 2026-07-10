@@ -30,6 +30,11 @@ class RequestContext:
     department: Optional[str] = None
     auth_source: str = "unknown"
     authenticated: bool = False
+    # API-facing aliases/transport metadata.  ``auth_source`` remains the
+    # canonical field used by the existing ACL implementation.
+    auth_mode: str = "unknown"
+    client_host: str = ""
+    user_agent: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", tuple(sorted({str(role) for role in self.roles if str(role).strip()})))
@@ -47,6 +52,7 @@ class RequestContext:
             department="local",
             auth_source="local-dev",
             authenticated=True,
+            auth_mode="local-dev",
         )
 
     @classmethod
@@ -63,6 +69,7 @@ class RequestContext:
             department=str(claims.get("department")) if claims.get("department") else None,
             auth_source=auth_source,
             authenticated=True,
+            auth_mode=auth_source,
         )
 
 
