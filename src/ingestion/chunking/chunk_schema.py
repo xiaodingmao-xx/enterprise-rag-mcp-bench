@@ -117,6 +117,15 @@ def sync_chunk_metadata(
 ) -> Dict[str, Any]:
     """Merge document/draft metadata and add structured schema fields."""
     metadata: Dict[str, Any] = dict(document.metadata or {})
+    parsed_summary = metadata.pop("parsed_document_summary", None)
+    # Enhanced parsing stores the full page/block summary once at document
+    # level.  Chunks retain only traceable, lightweight references.
+    if isinstance(parsed_summary, dict):
+        metadata.pop("headers_footers", None)
+        metadata.pop("pages", None)
+        metadata.pop("blocks", None)
+        metadata["parsed_document_id"] = parsed_summary.get("document_id", document.id)
+        metadata["parsed_page_count"] = parsed_summary.get("page_count", 0)
     doc_images = metadata.pop("images", [])
     metadata.update(draft.metadata or {})
 
@@ -140,6 +149,27 @@ def sync_chunk_metadata(
         keys=("table_ids", "table_refs", "tables"),
         marker="TABLE",
     )
+
+    if isinstance(parsed_summary, dict):
+        table_refs = {
+            str(item.get("table_id")): item
+            for item in parsed_summary.get("table_refs", [])
+            if isinstance(item, dict) and item.get("table_id") is not None
+        }
+        image_refs_by_id = {
+            str(item.get("image_id")): item
+            for item in parsed_summary.get("image_refs", [])
+            if isinstance(item, dict) and item.get("image_id") is not None
+        }
+        selected_table_refs = [table_refs[item] for item in table_ids if item in table_refs]
+        selected_image_refs = [image_refs_by_id[item] for item in image_refs if item in image_refs_by_id]
+        if selected_table_refs and len(selected_table_refs) == 1:
+            metadata["page_number"] = selected_table_refs[0].get("page_number")
+            metadata["bbox"] = selected_table_refs[0].get("bbox")
+        elif selected_image_refs and len(selected_image_refs) == 1:
+            metadata["page_number"] = selected_image_refs[0].get("page_number")
+            metadata["bbox"] = selected_image_refs[0].get("bbox")
+        metadata["block_ids"] = normalise_string_list(metadata.get("block_ids"))
 
     chunk_images = _resolve_images(image_refs, doc_images, metadata.get("images"))
     if chunk_images:

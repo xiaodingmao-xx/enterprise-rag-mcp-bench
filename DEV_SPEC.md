@@ -1207,6 +1207,52 @@ python -m pytest -q tests/api
 
 P1 新增测试使用 fake service、monkeypatch/内存 backend，不依赖真实 LLM、Embedding、外部 HTTP、Redis 或 MCP transport。完整 version/rollback 只有在注入现有 version store 后才启用，当前仅保留清晰的 NOT_IMPLEMENTED 接口。
 
+## 3.6.2 P1 OCR、Layout 和表格解析模块
+
+### 现状检查与增量策略
+
+本阶段开始前按“先检查、再增量实现”的方式核对现有代码：
+
+| 能力 | 结论 | 处理方式 |
+|---|---|---|
+| `Document`、`BaseLoader`、PDF/Markdown/TXT/HTML/DOCX/代码 Loader | `already_implemented` | 保持既有入口、返回类型和文本内容契约 |
+| PDF 文本/图片提取 | `partially_implemented` | `PdfLoader` 继续负责兼容路径；增强路径通过配置启用并可回退 |
+| `PdfQualityChecker` 与 Chunk metadata | `partially_implemented` | 复用旧检查器，追加结构化质量指标和表格/图片引用 |
+| OCR、Layout block、统一表格结构、页眉页脚识别 | `missing` | 新增可插拔 parser 层和 `ParsedDocument` 输出 |
+| 测试 PDF/扫描页/表格/图片 fixture | `missing` | 新增离线 fixture generator，测试不调用外部 OCR/LLM API |
+
+### 统一模型与解析工厂
+
+新增 `src/libs/loader/parsed_document.py`，定义 `BBox`、`Page`、`Block`、`Table`、`TableCell`、`Image`、`ExtractionQuality` 和 `ParsedDocument`。`ParsedDocument` 同时保留全文、页级结构、block reading order、坐标、表格单元格、图片引用、标题、页眉页脚和质量报告，并通过 `to_document()` 投影回既有 `Document`。
+
+新增 `src/libs/parser/`：
+
+- `BaseParser` 规定 `parse(path) -> ParsedDocument`，`BasicTextParser` 提供纯文本/PDF 的轻量默认实现。
+- `ParserFactory` 按扩展名返回增强 PDF parser 或兼容文本 parser；重依赖采用函数内 lazy import，导入项目不会强制初始化 OCR/table 引擎。
+- `PdfParser` 负责编排 Layout、Table、OCR fallback、页眉页脚和质量评估；`PdfLoader` 在 `enhanced_pdf.enabled` 时优先使用该路径，失败时回退既有 MarkItDown/PyMuPDF 逻辑。
+
+### OCR、Layout、图片与页眉页脚
+
+`OCRParser` 使用 Tesseract/Pillow 的可选能力，以页面文本密度阈值触发 fallback，记录 block bbox、平均置信度和缺依赖/低置信度 warning；OCR 不可用时保留原页面内容，不阻塞普通 PDF 解析。
+
+`LayoutParser` 基于 PyMuPDF page dictionary 生成 paragraph、heading、list、code、formula、caption、image block，并按 page → y → x 生成稳定阅读顺序。图片保留 `image_id/page_number/bbox`，附近 caption 会写入图片 metadata；现有 `Document.metadata.images` 和 `[IMAGE: image_id]` 兼容机制继续有效。
+
+`HeaderFooterDetector` 以跨页重复文本和页码模式识别 header/footer；默认将其从正文 paragraphs 排除，但在 `ParsedDocument.headers/footers` 中保留原 block 与坐标，避免页眉污染向量索引。
+
+### 表格与质量评估
+
+`TableParser` 支持 PyMuPDF 原生 table finder、pdfplumber/camelot 可选引擎和无引擎的文本/网格回退，输出表头、行、`TableCell` 坐标、Markdown、plain text、confidence 和 extraction method。跨页同列数表格会标记 `possible_continuation`，跨页合并作为后续增强能力保留。
+
+质量评估复用并扩展 `src/libs/loader/document_quality.py`，统一计算 text density、garbled ratio、OCR confidence、empty page ratio、duplicate block ratio、table extraction success 和 warnings，并给出 accepted/warning/needs_manual_review/rejected。扫描 PDF 在 OCR 关闭或不可用时不会伪装成高质量文本。
+
+### 集成、配置、依赖与验收
+
+`config/settings.yaml` 和 `config/settings.example.yaml` 新增 `ingestion.parsing.enhanced_pdf`，覆盖 OCR、Layout、tables、headers_footers、quality、`preserve_existing_loader` 和 fallback 行为。`chunk_schema.sync_chunk_metadata()` 仅保留轻量 `parsed_document_id/page_number/bbox/table_refs/image_refs`，不会把整棵解析树复制到每个 Chunk。
+
+新增可选依赖组：`parsing`、`ocr`、`tables`；基础导入不要求本机安装 Tesseract、Camelot 或 pdfplumber。`tests/fixtures/generate_pdf_fixtures.py` 可生成普通文本、扫描页、表格、图片、页眉页脚、跨页表格和乱码 PDF；`tests/parser/` 覆盖模型 round-trip、工厂、OCR 缺依赖/低密度回退、Layout/图片、表格、页眉页脚、质量和兼容 Loader。
+
+明确预留但本阶段不强制完成的能力包括：真实 OCR 引擎部署与语言包管理、跨页表格语义合并、复杂多栏版面/旋转页面、表格视觉纠错、图表理解和视觉 LLM captioning。
+
 ## 4. 测试方案
 
 ### 4.1 设计理念：测试驱动开发 (TDD)
@@ -2096,6 +2142,8 @@ dashboard:
    - 目的：补齐 E2E 测试（MCP Client 模拟 + Dashboard 冒烟），完善 README，全链路验收，确保“开箱即用 + 可复现”。
 10. **阶段 P1：生产 API、MCP HTTP Gateway 与限流模块**
    - 目的：在不破坏 stdio MCP 的前提下，增加可通过 HTTP 安全调用的 REST API、MCP Gateway、鉴权、租户隔离、限流、请求保护和统一错误边界。
+11. **阶段 P1-Parsing：OCR、Layout 和表格解析模块**
+   - 目的：在保留既有多格式 Loader、Document 和 Chunking 契约的前提下，增加统一 ParsedDocument、OCR fallback、Layout block、表格/图片/页眉页脚结构和质量分级。
 
 
 ---
@@ -2235,6 +2283,19 @@ dashboard:
 | P1.7 | API 配置与启动脚本 | [x] | 2026-07-11 | `config/settings*.yaml`、`scripts/start_api.py`、依赖清单 |
 | P1.8 | API 安全/一致性测试与文档 | [x] | 2026-07-11 | `tests/api` 6 项测试；不依赖 Redis、外部 API、真实 LLM |
 
+#### 阶段 P1-Parsing：OCR、Layout 和表格解析模块
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| P1-P.1 | ParsedDocument、Page、Block、Table、Image、Quality 模型 | [x] | 2026-07-11 | 保留既有 Document/Chunk 契约并提供 metadata 投影 |
+| P1-P.2 | BaseParser、BasicTextParser 与 ParserFactory | [x] | 2026-07-11 | PDF 增强 parser，其他格式保持原 Loader |
+| P1-P.3 | PdfParser 与 OCR fallback | [x] | 2026-07-11 | 低文本密度触发；缺依赖/低置信度可观测且可回退 |
+| P1-P.4 | Layout block、阅读顺序与图片坐标 | [x] | 2026-07-11 | heading/list/code/formula/caption/image 分类 |
+| P1-P.5 | 表格解析、单元格坐标与 Markdown 输出 | [x] | 2026-07-11 | native/fallback parser，跨页 continuation 标记 |
+| P1-P.6 | 页眉页脚检测与质量评分 | [x] | 2026-07-11 | 重复页眉、页码、乱码/空页/重复 block 指标 |
+| P1-P.7 | PdfLoader、Pipeline、Chunk metadata 与配置集成 | [x] | 2026-07-11 | enhanced_pdf 开关，旧路径兼容 |
+| P1-P.8 | Fixtures、parser 测试与开发文档 | [x] | 2026-07-11 | 离线 fake OCR；不依赖外部 API 或真实 OCR |
+
 ---
 
 ### 📈 总体进度
@@ -2251,7 +2312,8 @@ dashboard:
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
 | 阶段 P1 | 8 | 8 | 100% |
-| **总计** | **76** | **76** | **100%** |
+| 阶段 P1-Parsing | 8 | 8 | 100% |
+| **总计** | **84** | **84** | **100%** |
 
 
 ---

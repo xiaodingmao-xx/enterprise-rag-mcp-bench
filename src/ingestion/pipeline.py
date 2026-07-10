@@ -540,11 +540,38 @@ class IngestionPipeline:
             if trace is not None:
                 trace.record_stage("quality", quality_data, elapsed_ms=_elapsed)
 
+            parsing_config = {}
+            ingestion_settings = getattr(getattr(self, "settings", None), "ingestion", None)
+            if isinstance(ingestion_settings, dict):
+                parsing_config = ingestion_settings.get("parsing", {}) or {}
+            else:
+                parsing_config = getattr(ingestion_settings, "parsing", {}) or {}
+            enhanced_pdf = (
+                parsing_config.get("enhanced_pdf", {})
+                if isinstance(parsing_config, dict)
+                else {}
+            )
+            enhanced_ocr_enabled = bool(
+                isinstance(enhanced_pdf, dict)
+                and enhanced_pdf.get("enabled", False)
+                and isinstance(enhanced_pdf.get("ocr"), dict)
+                and enhanced_pdf.get("ocr", {}).get("enabled", False)
+            )
+
             if quality_report.passed:
                 logger.info(
                     "  ✓ Quality check passed "
                     f"(ratio={quality_report.effective_char_ratio}, "
                     f"density={quality_report.recognizable_text_density})"
+                )
+            elif enhanced_ocr_enabled:
+                # A low-density/scanned PDF is intentionally deferred to the
+                # enhanced parser's OCR fallback instead of being rejected by
+                # the historical text-layer preflight gate.
+                stages["quality"]["deferred_to_enhanced_parser"] = True
+                logger.warning(
+                    "  ⚠️ Low text-layer quality deferred to enhanced OCR parser "
+                    f"(reason={quality_report.reason})"
                 )
             else:
                 logger.warning(
@@ -598,37 +625,37 @@ class IngestionPipeline:
                     ensure_ascii=False,
                 ).encode("utf-8")
             ).hexdigest()
-            logical_record = self.document_version_store.get_or_create_record(
-                tenant_id=str(request_context.tenant_id or ""),
-                source_id=self.collection,
-                external_document_id=str(file_path.resolve()),
-                document_id=hashlib.sha256(
-                    f"{request_context.tenant_id}:{self.collection}:{file_path.resolve()}".encode("utf-8")
-                ).hexdigest(),
-                title=str(document.metadata.get("title", "")),
-                source_uri=str(file_path),
-                source_type=str(
-                    document.metadata.get("file_type")
-                    or document.metadata.get("doc_type")
-                    or file_path.suffix.lstrip(".")
-                ),
+            version_store = getattr(self, "document_version_store", None)
+            logical_record = (
+                version_store.get_or_create_record(
+                    tenant_id=str(request_context.tenant_id or ""),
+                    source_id=self.collection,
+                    external_document_id=str(file_path.resolve()),
+                    document_id=hashlib.sha256(
+                        f"{request_context.tenant_id}:{self.collection}:{file_path.resolve()}".encode("utf-8")
+                    ).hexdigest(),
+                    title=str(document.metadata.get("title", "")),
+                    source_uri=str(file_path),
+                    source_type=str(
+                        document.metadata.get("file_type")
+                        or document.metadata.get("doc_type")
+                        or file_path.suffix.lstrip(".")
+                    ),
+                )
+                if version_store is not None
+                else None
             )
-            logical_document_id = logical_record.document_id
+            logical_document_id = logical_record.document_id if logical_record is not None else document.id
             parser_version = str(document.metadata.get("parser_version", "loader-v1"))
             chunker_version = str(
-                getattr(getattr(self.settings, "ingestion", None), "splitter", "recursive")
+                getattr(getattr(getattr(self, "settings", None), "ingestion", None), "splitter", "recursive")
             )
-            embedding_model = str(getattr(self.settings.embedding, "model", "unknown"))
-            version_record = self.document_version_store.find_existing_version(
-                document_id=logical_record.document_id,
-                content_hash=file_hash,
-                metadata_hash=metadata_hash,
-                parser_version=parser_version,
-                chunker_version=chunker_version,
-                embedding_model=embedding_model,
+            embedding_model = str(
+                getattr(getattr(getattr(self, "settings", None), "embedding", None), "model", "unknown")
             )
-            if version_record is None:
-                version_record = self.document_version_store.create_version(
+            version_record = None
+            if version_store is not None and logical_record is not None:
+                version_record = version_store.find_existing_version(
                     document_id=logical_record.document_id,
                     content_hash=file_hash,
                     metadata_hash=metadata_hash,
@@ -636,27 +663,38 @@ class IngestionPipeline:
                     chunker_version=chunker_version,
                     embedding_model=embedding_model,
                 )
-            elif version_record.status in {"failed", "deleted"}:
-                version_record = self.document_version_store.reset_version(version_record.version_id)
-            version_id = version_record.version_id
+                if version_record is None:
+                    version_record = version_store.create_version(
+                        document_id=logical_record.document_id,
+                        content_hash=file_hash,
+                        metadata_hash=metadata_hash,
+                        parser_version=parser_version,
+                        chunker_version=chunker_version,
+                        embedding_model=embedding_model,
+                    )
+                elif version_record.status in {"failed", "deleted"}:
+                    version_record = version_store.reset_version(version_record.version_id)
+            version_id = getattr(version_record, "version_id", None)
             document.metadata["version_id"] = version_id
             acl_metadata["version_id"] = version_id
             stages["version"] = {
-                "document_id": logical_record.document_id,
+                "document_id": logical_document_id,
                 "version_id": version_id,
-                "status": version_record.status,
+                "status": getattr(version_record, "status", "not_configured"),
                 "content_hash": file_hash,
                 "metadata_hash": metadata_hash,
             }
-            self.audit_log_store.write(
-                action="ingest_version",
-                document_id=logical_record.document_id,
-                version_id=version_id,
-                tenant_id=str(request_context.tenant_id or ""),
-                actor=str(request_context.user_id or "system"),
-                detail={"collection": self.collection, "status": version_record.status},
-            )
-            if version_record.status == "active" and not self.force:
+            audit_log_store = getattr(self, "audit_log_store", None)
+            if audit_log_store is not None and version_record is not None:
+                audit_log_store.write(
+                    action="ingest_version",
+                    document_id=logical_document_id,
+                    version_id=version_id,
+                    tenant_id=str(request_context.tenant_id or ""),
+                    actor=str(request_context.user_id or "system"),
+                    detail={"collection": self.collection, "status": version_record.status},
+                )
+            if version_record is not None and version_record.status == "active" and not self.force:
                 stages["version"]["skipped"] = True
                 return PipelineResult(
                     success=True,

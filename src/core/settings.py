@@ -405,6 +405,7 @@ class IngestionSettings:
     document_quality: Optional[Dict[str, Any]] = None
     concurrent_upload: Dict[str, Any] = field(default_factory=dict)
     task_queue: Dict[str, Any] = field(default_factory=dict)
+    parsing: Dict[str, Any] = field(default_factory=dict)
     supported_extensions: List[str] = field(
         default_factory=lambda: DEFAULT_SUPPORTED_EXTENSIONS.copy()
     )
@@ -546,6 +547,11 @@ class Settings:
                 ingestion_settings,
                 "task_queue",
                 _optional_mapping(ingestion.get("task_queue")),
+            )
+            object.__setattr__(
+                ingestion_settings,
+                "parsing",
+                _optional_mapping(ingestion.get("parsing")),
             )
 
         vision_llm_settings = None

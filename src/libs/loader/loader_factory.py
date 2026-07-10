@@ -81,6 +81,7 @@ class LoaderFactory:
             )
 
         if loader_cls is PdfLoader:
+            kwargs.setdefault("settings", settings)
             return loader_cls(**kwargs)
         return loader_cls()
 

@@ -7,10 +7,13 @@ prevents low-quality chunks from polluting the vector and keyword indexes.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict
+from collections import Counter
+from typing import Any, Dict, Iterable, List, Mapping, Sequence
 import unicodedata
+
+from src.libs.loader.parsed_document import Block, ExtractionQuality, Page, Table
 
 try:
     import fitz  # PyMuPDF
@@ -40,10 +43,20 @@ class DocumentQualityReport:
     recognizable_text_density: float = 0.0
     min_effective_char_ratio: float = 0.8
     min_recognizable_text_density: float = 20.0
+    text_density: float = 0.0
+    garbled_ratio: float = 0.0
+    ocr_confidence: float = 0.0
+    empty_page_ratio: float = 0.0
+    table_extraction_success: bool = True
+    duplicate_block_ratio: float = 0.0
+    quality_status: str = "accepted"
+    warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serializable representation."""
-        return asdict(self)
+        value = asdict(self)
+        value["warnings"] = list(self.warnings or [])
+        return value
 
 
 class PdfQualityChecker:
@@ -186,3 +199,87 @@ class PdfQualityChecker:
             "#",
             "$",
         }
+
+
+def garbled_ratio(text: str) -> float:
+    """Estimate unreadable/encoding-corrupted text without language models."""
+
+    chars = [char for char in str(text or "") if not char.isspace()]
+    if not chars:
+        return 0.0
+    suspicious = 0
+    for char in chars:
+        category = unicodedata.category(char)
+        if char == "\ufffd" or category in {"Cc", "Cf", "Co", "Cs"}:
+            suspicious += 1
+        elif category == "So" and char not in {"©", "®", "™"}:
+            suspicious += 1
+        elif char in "ÃÂÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞß":
+            suspicious += 1
+    return min(1.0, suspicious / len(chars))
+
+
+def assess_parsed_document_quality(
+    pages: Sequence[Page],
+    blocks: Sequence[Block],
+    tables: Sequence[Table],
+    *,
+    ocr_confidence: float = 0.0,
+    warnings: Iterable[str] = (),
+    config: Mapping[str, Any] | None = None,
+) -> ExtractionQuality:
+    """Build the enhanced quality contract from parsed pages and blocks."""
+
+    config = config or {}
+    page_count = max(1, len(pages))
+    page_texts = [str(page.text or "") for page in pages]
+    combined = "\n".join(page_texts)
+    text_density = len("".join(part for part in page_texts if part)) / page_count
+    empty_ratio = sum(not text.strip() for text in page_texts) / page_count
+    normalized = [" ".join(block.text.split()).lower() for block in blocks if block.text.strip()]
+    counts = Counter(normalized)
+    duplicate_count = sum(count - 1 for count in counts.values() if count > 1)
+    duplicate_ratio = duplicate_count / len(normalized) if normalized else 0.0
+    quality_warnings = list(dict.fromkeys(str(item) for item in warnings if item))
+    ratio = garbled_ratio(combined)
+    min_density = float(config.get("min_text_density", 20.0) or 20.0)
+    max_garbled = float(config.get("max_garbled_ratio", 0.20) or 0.20)
+    max_empty = float(config.get("max_empty_page_ratio", 0.50) or 0.50)
+    max_duplicate = float(config.get("max_duplicate_block_ratio", 0.40) or 0.40)
+
+    if ratio >= max_garbled:
+        quality_warnings.append("GARBLE_TEXT_DETECTED")
+    if text_density < min_density:
+        quality_warnings.append("LOW_TEXT_DENSITY")
+    if empty_ratio > 0:
+        quality_warnings.append("EMPTY_PAGE_DETECTED")
+    if not tables:
+        table_success = True
+    else:
+        table_success = not any("TABLE_EXTRACTION_FAILED" in item for item in quality_warnings)
+    if not table_success:
+        quality_warnings.append("TABLE_EXTRACTION_FAILED")
+    if duplicate_ratio > max_duplicate:
+        quality_warnings.append("DUPLICATE_BLOCK_DETECTED")
+
+    if not combined.strip() and not blocks:
+        status = "rejected"
+    elif ratio >= max_garbled:
+        status = "rejected" if bool(config.get("reject_on_garbled", False)) else "needs_manual_review"
+    elif (text_density < min_density and ocr_confidence <= 0.0) or empty_ratio > max_empty:
+        status = "needs_manual_review"
+    elif quality_warnings or text_density < min_density or duplicate_ratio > max_duplicate:
+        status = "warning"
+    else:
+        status = "accepted"
+
+    return ExtractionQuality(
+        text_density=round(text_density, 2),
+        garbled_ratio=round(ratio, 4),
+        ocr_confidence=round(float(ocr_confidence), 4),
+        empty_page_ratio=round(empty_ratio, 4),
+        table_extraction_success=table_success,
+        duplicate_block_ratio=round(duplicate_ratio, 4),
+        quality_status=status,
+        warnings=list(dict.fromkeys(quality_warnings)),
+    )

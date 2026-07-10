@@ -10,6 +10,7 @@
 - [分支说明](#-分支说明)
 - [快速开始](#-快速开始)
 - [P1 生产 API 与 MCP HTTP Gateway](#p1-生产-api-与-mcp-http-gateway)
+- [P1 OCR、Layout 和表格解析](#p1-ocr、layout-和表格解析)
 - [谁适合用这个项目 & 怎么用](#-谁适合用这个项目--怎么用)
 - [简历参考](#-简历参考)
 - [常见问题](#-常见问题)
@@ -41,6 +42,7 @@
 | 模块 | 能力 | 说明 |
 |------|------|------|
 | **Ingestion Pipeline** | 多格式文档 → Chunk → Transform → Embedding → Upsert | 支持 PDF / Markdown / TXT / HTML / DOCX / 代码文件摄取，注入结构化 metadata，PDF 保留多模态图片描述（Image Captioning） |
+| **P1 Enhanced Parsing** | ParsedDocument + OCR fallback + Layout + Table | PDF 页面/block/bbox/reading order、结构化表格、图片关联、页眉页脚去重、乱码和质量分级 |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
 | **MCP Server** | 标准 MCP 协议暴露 Tools | `query_knowledge_hub`、`list_collections`、`get_document_summary` |
 | **P1 Production API** | REST API + MCP HTTP Gateway + 生产边界 | JWT/local-dev、RequestContext、租户/用户限流、body limit、分阶段超时、统一错误响应、health live/ready |
@@ -98,6 +100,82 @@ security:
 ```
 
 企业文档的安全观测也已分流：debug trace、operational log 和 audit log 分别写入不同 JSONL 文件；trace 默认只保留脱敏摘要，Dashboard 不默认展示完整文档原文。
+
+## P1 OCR、Layout 和表格解析
+
+增强解析位于 `src/libs/parser/`，以 `ParsedDocument` 作为文档级结构化解析结果，再通过 adapter 转回既有 `src.core.types.Document`。现有 `PdfLoader.load()`、`LoaderFactory`、chunking 和 ingestion pipeline 的主契约保持不变。
+
+### 统一 ParsedDocument
+
+`ParsedDocument` 包含 `pages`、`blocks`、`paragraphs`、`tables`、`images`、`headers`、`footers`、`headings`、`reading_order`、`source_coordinates`、`extraction_quality` 和 `metadata`。其中：
+
+- `Block` 保存 `block_id/block_type/page_number/bbox/confidence/reading_order_index`；
+- `Table` 保存 headers、rows、cells、Markdown、plain text、抽取方式和置信度；
+- `Image` 保存 `image_id/page_number/bbox/caption/extracted_path`；
+- `ExtractionQuality` 对文本密度、乱码率、OCR 置信度、空页率、重复 block 和表格成功率分级为 `accepted`、`warning`、`needs_manual_review` 或 `rejected`。
+
+完整解析结果只在文档级保存。转换到 `Document.metadata` 后，chunk 只保留 `page_number/table_ids/image_ids/block_ids/bbox/heading_path` 等轻量引用，不复制完整表格和图片对象。
+
+### ParserFactory 与 PDF 处理
+
+```python
+from src.libs.parser.parser_factory import ParserFactory
+
+parser = ParserFactory.get_parser("report.pdf", settings=settings)
+parsed = parser.parse("report.pdf")
+document = parsed.to_document()
+```
+
+`ParserFactory` 对 PDF 选择 `PdfParser`，对其它文本格式选择无重依赖的 `BasicTextParser`。`PdfParser` 先读取文本层，再用 PyMuPDF 提取 block、字体特征、bbox、阅读顺序、图片和表格；增强解析关闭时会走基础文本路径并记录 `ENHANCED_PARSING_DISABLED`。
+
+### OCR fallback
+
+当页面平均文本密度低于 `ingestion.parsing.enhanced_pdf.ocr.min_text_density` 时，且 OCR 开关开启，才调用 `OCRParser`。Tesseract/Pillow 在函数内部 lazy import；依赖缺失只记录 `OCR_DEPENDENCY_MISSING`，不会阻止普通文本 PDF 或项目启动。测试使用 Fake OCR parser，不需要本机安装 Tesseract。
+
+### Layout、图片和页眉页脚
+
+Layout parser 使用 PyMuPDF 的 page dictionary 生成 paragraph/heading/list/code/formula/caption/image block，并按 page → y → x 排序。图片保留页码和 bbox，附近的 `图/Figure` caption 会关联到 image metadata；原有 `[IMAGE: image_id]` 机制仍由 legacy loader 保留。
+
+重复出现在顶部/底部区域的文本按页数阈值识别为 header/footer，页码 footer 也可识别。它们仍保存在 `ParsedDocument.headers/footers` 和 document metadata 中，但默认从正文 text/chunk 中排除，不物理删除原始信息。
+
+### 表格与质量检测
+
+Table parser 优先使用 PyMuPDF 原生 table finder，其次使用网格线和文本行启发式抽取；`pdfplumber`/Camelot 只作为可选增强。表格提供 Markdown、纯文本、行列关系和 cell bbox。相邻页面列数一致的表格会标记 `possible_continuation` 和 `CROSS_PAGE_TABLE_CANDIDATE`，一期不强制合并。
+
+质量检测复用并扩展 `src/libs/loader/document_quality.py`，综合 replacement character、异常 Unicode、符号比例、文本密度、空页比例、重复 block 和表格失败结果。扫描 PDF 在 OCR 未启用/不可用时不会静默标记为 accepted；严重乱码默认进入 `needs_manual_review`，可通过 `reject_on_garbled` 改为 rejected。
+
+### 配置与可选依赖
+
+配置位于 `config/settings.yaml` 的 `ingestion.parsing.enhanced_pdf`：
+
+```yaml
+ingestion:
+  parsing:
+    enhanced_pdf:
+      enabled: true
+      ocr:
+        enabled: false
+      layout:
+        enabled: true
+      tables:
+        enabled: true
+      headers_footers:
+        enabled: true
+      quality:
+        min_text_density: 20
+        max_garbled_ratio: 0.20
+```
+
+基础安装不强制引入 Tesseract、Camelot 或 pdfplumber；可按需安装 `pip install -e ".[parsing,ocr,tables]"`。PyMuPDF/Pillow 已是当前项目既有基础能力，新增 parser 不在模块导入阶段加载 OCR/table 重依赖。
+
+### Fixtures 与测试
+
+`tests/fixtures/generate_pdf_fixtures.py` 可程序化生成普通文本、扫描、表格、图片、页眉页脚、跨页表格和乱码 PDF，不依赖网络。测试使用 PyMuPDF 生成临时 PDF，并用 fake/monkeypatch 隔离 OCR：
+
+```bash
+python -m pytest -q tests/parser
+python -m pytest -q tests/parser tests/api
+```
 
 ## 📂 分支说明
 

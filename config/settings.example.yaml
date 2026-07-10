@@ -193,6 +193,45 @@ ingestion:
     retry_base_delay_seconds: 10
     retry_max_delay_seconds: 300
     retry_jitter: true
+  parsing:
+    enhanced_pdf:
+      enabled: true
+      preserve_existing_loader: true
+      ocr:
+        enabled: false
+        engine: "tesseract"
+        languages: ["chi_sim", "eng"]
+        min_text_density: 20
+        min_ocr_confidence: 0.60
+        fallback_on_missing_dependency: true
+      layout:
+        enabled: true
+        extract_blocks: true
+        extract_images: true
+        extract_coordinates: true
+        detect_reading_order: true
+      tables:
+        enabled: true
+        engine: "auto"
+        fallback_to_text: true
+        extract_markdown: true
+        extract_cell_coordinates: true
+        detect_cross_page: true
+      headers_footers:
+        enabled: true
+        similarity_threshold: 0.85
+        min_repeat_pages: 2
+        top_margin_ratio: 0.12
+        bottom_margin_ratio: 0.12
+        exclude_from_chunks: true
+      quality:
+        enabled: true
+        min_text_density: 20
+        max_garbled_ratio: 0.20
+        max_empty_page_ratio: 0.50
+        max_duplicate_block_ratio: 0.40
+        reject_on_garbled: false
+        warning_on_low_quality: true
   supported_extensions:
     - ".pdf"
     - ".md"

@@ -10,6 +10,21 @@ from src.observability.dashboard.services.trace_service import TraceService
 from src.observability.redaction import redact_text
 
 
+def _is_already_processed_trace(trace: Dict[str, Any], stages_by_name: Dict[str, Any]) -> bool:
+    """Return whether an ingestion trace was intentionally skipped as a duplicate."""
+
+    metadata = trace.get("metadata", {}) if isinstance(trace, dict) else {}
+    if isinstance(metadata, dict) and metadata.get("skip_reason") == "already_processed":
+        return True
+    integrity = stages_by_name.get("integrity", {}) if isinstance(stages_by_name, dict) else {}
+    data = integrity.get("data", {}) if isinstance(integrity, dict) else {}
+    return (
+        isinstance(data, dict)
+        and data.get("skipped") is True
+        and data.get("reason") == "already_processed"
+    )
+
+
 def render() -> None:
     st.header("Ingestion Traces")
     service = TraceService()
@@ -75,4 +90,3 @@ def _render_load_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
     if preview:
         st.caption("Redacted preview")
         st.text_area(f"load_preview_{trace_idx}", redact_text(preview, max_length=256), height=100, disabled=True)
-

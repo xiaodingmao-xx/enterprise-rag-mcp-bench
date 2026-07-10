@@ -38,6 +38,20 @@ from src.libs.loader.base_loader import BaseLoader
 logger = logging.getLogger(__name__)
 
 
+class _PyMuPDFTextCompat:
+    """Small legacy converter fallback when optional MarkItDown is absent."""
+
+    def convert(self, file_path: str):
+        try:
+            import fitz
+
+            with fitz.open(file_path) as document:
+                text = "\n\n".join(page.get_text("text") or "" for page in document)
+        except Exception as exc:
+            raise RuntimeError("PDF text extraction failed") from exc
+        return type("ConversionResult", (), {"text_content": text})()
+
+
 class PdfLoader(BaseLoader):
     """PDF Loader using MarkItDown for text extraction and Markdown conversion.
     
@@ -58,7 +72,9 @@ class PdfLoader(BaseLoader):
     def __init__(
         self,
         extract_images: bool = True,
-        image_storage_dir: str | Path = "data/images"
+        image_storage_dir: str | Path = "data/images",
+        settings: Any = None,
+        enhanced_pdf: Optional[Dict[str, Any]] = None,
     ):
         """Initialize PDF Loader.
         
@@ -66,15 +82,11 @@ class PdfLoader(BaseLoader):
             extract_images: Whether to extract images from PDFs.
             image_storage_dir: Base directory for storing extracted images.
         """
-        if not MARKITDOWN_AVAILABLE:
-            raise ImportError(
-                "MarkItDown is required for PdfLoader. "
-                "Install with: pip install markitdown"
-            )
-        
+        self.settings = settings
+        self.enhanced_pdf = enhanced_pdf or self._enhanced_pdf_config(settings)
         self.extract_images = extract_images
         self.image_storage_dir = Path(image_storage_dir)
-        self._markitdown = MarkItDown()
+        self._markitdown = MarkItDown() if MARKITDOWN_AVAILABLE else _PyMuPDFTextCompat()
     
     def load(self, file_path: str | Path) -> Document:
         """Load and parse a PDF file.
@@ -94,6 +106,34 @@ class PdfLoader(BaseLoader):
         path = self._validate_file(file_path)
         if path.suffix.lower() != '.pdf':
             raise ValueError(f"File is not a PDF: {path}")
+
+        # The enhanced parser is an opt-in adapter.  Direct ``PdfLoader()``
+        # calls retain the historical MarkItDown behavior; LoaderFactory
+        # passes Settings and enables this branch through ingestion.parsing.
+        if bool(self.enhanced_pdf.get("enabled", False)):
+            try:
+                from src.libs.parser.parser_factory import ParserFactory
+
+                parser = ParserFactory.get_parser(
+                    path,
+                    settings=self.settings,
+                    extract_images=self.extract_images,
+                    image_storage_dir=self.image_storage_dir,
+                )
+                parsed = parser.parse(path)
+                document = parsed.to_document(
+                    extra_metadata={
+                        "source_path": str(path),
+                        "doc_type": "pdf",
+                        "doc_hash": self._compute_file_hash(path),
+                    }
+                )
+                title = self._extract_title(document.text)
+                if title:
+                    document.metadata.setdefault("title", title)
+                return document
+            except Exception as exc:
+                logger.warning("Enhanced PDF parsing failed; using legacy loader: %s", type(exc).__name__)
         
         # Compute document hash for unique ID and image directory
         doc_hash = self._compute_file_hash(path)
@@ -137,6 +177,18 @@ class PdfLoader(BaseLoader):
             text=text_content,
             metadata=metadata
         )
+
+    @staticmethod
+    def _enhanced_pdf_config(settings: Any) -> Dict[str, Any]:
+        ingestion = getattr(settings, "ingestion", None) if settings is not None else None
+        if isinstance(ingestion, dict):
+            parsing = ingestion.get("parsing", {})
+        else:
+            parsing = getattr(ingestion, "parsing", {}) if ingestion is not None else {}
+        if isinstance(parsing, dict):
+            enhanced = parsing.get("enhanced_pdf", {})
+            return dict(enhanced) if isinstance(enhanced, dict) else {}
+        return {}
     
     def _compute_file_hash(self, file_path: Path) -> str:
         """Compute SHA256 hash of file content.
