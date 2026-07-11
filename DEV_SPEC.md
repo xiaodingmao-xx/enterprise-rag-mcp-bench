@@ -168,6 +168,34 @@
 
 ## 3. 技术选型
 
+### 3.0 P1：Rerank、引用验证与拒答模块
+
+P1 在不重写现有 `CoreReranker`、`BaseReranker`、`AnswerGenerator`、`GroundedAnswerBuilder` 和 `query_knowledge_hub` 主流程的前提下，补齐可信问答链路：
+
+```text
+retrieval -> candidate filtering -> rerank -> context selection
+-> answer generation -> claim extraction -> citation verification
+-> refusal / safety check -> confidence scoring -> final response
+```
+
+#### 设计与兼容性
+
+- `RerankResult` 继续使用旧字段 `results`、`used_fallback`、`fallback_reason`、`reranker_type`、`original_order`，并提供 `ranked_chunks`、`fallback_used` 及 provider/model/input_count/output_count/latency_ms/timeout/estimated_cost/error_code/trace_id。timeout、provider 失败、非法输出分别使用 `RERANK_TIMEOUT`、`RERANK_FAILED`、`INVALID_RERANK_OUTPUT`，默认返回原始排序。
+- `CitationRecord` 统一来自 `RetrievedContext` 或 `RetrievalResult` 的引用信息，并在序列化时保留 `source`、`page`、`snippet` 等旧别名。
+- `RuleBasedClaimExtractor` 默认启用，按中英文句末标点提取事实性句子和 `[C1]` marker；`LLMClaimExtractor` 仅为 P2 预留。
+- `CitationVerifier` 使用 marker/context/chunk/page 校验、轻量 token/数字重叠支持判断以及现有 `ACLFilter`/`ACLPolicy` 权限判断；无权限引用不会进入最终 citations。
+- `RefusalPolicy` 以结构化 `RefusalDecision` 处理无上下文、低召回分数、无有效引用、权限不足、越界、prompt injection 和未支持 claim。拒答不泄露 prompt、token、API key 或堆栈。
+- `PromptInjectionDetector` 与 `SourceConflictDetector` 为 P1 规则实现；前者检查 query/context/answer，后者识别常见中英文状态冲突和同字段值冲突。
+- `AnswerConfidenceScorer` 输出 `high/medium/low`、0-1 score 和多因子明细，`GroundedAnswer` 保留旧 schema 并增加拒答、验证、claim、冲突、rerank 和 confidence 字段。
+
+#### 配置与观测
+
+`config/settings.yaml` 增加了 rerank retry/cost_limit/circuit_breaker/provider_switching 配置，以及 response 下的 claim_extraction、citation_verification、refusal、confidence、source_conflict、safety 配置。默认不调用额外 LLM/NLI/API。Rerank 和可信回答 metadata 会写入 trace，warning code 会去重。
+
+#### 测试策略与 P2 边界
+
+P1 测试使用 fake answer generator、fake reranker、fake contexts，可直接运行 pytest，不需要 Redis、Qdrant、OpenSearch、PostgreSQL 或网络。完整 circuit breaker、自动 provider switching、LLM claim/citation verification、NLI contradiction detection 和精细成本控制作为 P2 扩展点保留。
+
 ### 3.1 RAG 核心流水线设计 
 
 #### 3.1.1 数据摄取流水线 

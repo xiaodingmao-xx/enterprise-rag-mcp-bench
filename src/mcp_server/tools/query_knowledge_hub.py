@@ -23,14 +23,21 @@ from typing import Any, Dict, Hashable, List, Optional, TYPE_CHECKING
 from mcp import types
 
 from src.core.response.answer_generator import AnswerGenerator
+from src.core.response.citation import CitationRecord
+from src.core.response.citation_verifier import CitationVerifier
+from src.core.response.claim_extractor import ClaimExtractor, NoopClaimExtractor, RuleBasedClaimExtractor
+from src.core.response.confidence import AnswerConfidenceScorer
 from src.core.response.grounded_answer_builder import GroundedAnswerBuilder
 from src.core.response.hallucination_guard import HallucinationGuard
+from src.core.response.refusal_policy import RefusalPolicy, RefusalPolicyConfig
 from src.core.response.retrieval_status import (
     RetrievalStatus,
     assess_retrieval_status,
     contexts_from_results,
 )
 from src.core.response.response_builder import ResponseBuilder, MCPToolResponse
+from src.core.response.safety import PromptInjectionDetector
+from src.core.response.source_conflict import SourceConflictDetector
 from src.core.settings import load_settings, resolve_path, Settings
 from src.core.trace import TraceContext, TraceCollector
 from src.core.types import RetrievalResult
@@ -155,6 +162,12 @@ class QueryKnowledgeHubTool:
         answer_generator: Optional[AnswerGenerator] = None,
         grounded_answer_builder: Optional[GroundedAnswerBuilder] = None,
         hallucination_guard: Optional[HallucinationGuard] = None,
+        claim_extractor: Optional[ClaimExtractor] = None,
+        citation_verifier: Optional[CitationVerifier] = None,
+        refusal_policy: Optional[RefusalPolicy] = None,
+        source_conflict_detector: Optional[SourceConflictDetector] = None,
+        confidence_scorer: Optional[AnswerConfidenceScorer] = None,
+        prompt_injection_detector: Optional[PromptInjectionDetector] = None,
     ) -> None:
         """Initialize QueryKnowledgeHubTool.
         
@@ -174,6 +187,12 @@ class QueryKnowledgeHubTool:
         self._answer_generator = answer_generator
         self._grounded_answer_builder = grounded_answer_builder or GroundedAnswerBuilder()
         self._hallucination_guard = hallucination_guard or HallucinationGuard()
+        self._claim_extractor = claim_extractor
+        self._citation_verifier = citation_verifier
+        self._refusal_policy = refusal_policy
+        self._source_conflict_detector = source_conflict_detector
+        self._confidence_scorer = confidence_scorer
+        self._prompt_injection_detector = prompt_injection_detector
         self._query_cache: Optional[LruTtlCache[tuple[Hashable, ...], MCPToolResponse]] = None
         
         # Track initialization state
@@ -492,6 +511,7 @@ class QueryKnowledgeHubTool:
                     include_sources,
                     include_citations,
                     trace,
+                    request_context,
                 )
             else:
                 response = self._build_contexts_response(
@@ -729,9 +749,27 @@ class QueryKnowledgeHubTool:
             
             if rerank_result.used_fallback:
                 logger.warning(
-                    f"Reranker fallback: {rerank_result.fallback_reason}"
+                    "Reranker fallback: error_code=%s",
+                    rerank_result.error_code or "RERANK_FALLBACK_USED",
                 )
-            
+            if trace is not None:
+                trace.metadata["rerank_metadata"] = {
+                    "provider": rerank_result.provider,
+                    "model": rerank_result.model,
+                    "reranker_type": rerank_result.reranker_type,
+                    "input_count": rerank_result.input_count,
+                    "output_count": rerank_result.output_count,
+                    "latency_ms": rerank_result.latency_ms,
+                    "timeout": rerank_result.timeout,
+                    "used_fallback": rerank_result.used_fallback,
+                    "fallback_reason": rerank_result.error_code or (
+                        "fallback_used" if rerank_result.used_fallback else None
+                    ),
+                    "estimated_cost": rerank_result.estimated_cost,
+                    "error_code": rerank_result.error_code,
+                    "trace_id": rerank_result.trace_id,
+                }
+
             return rerank_result.results
         except Exception as e:
             logger.warning(f"Reranking failed, using original order: {e}")
@@ -793,6 +831,7 @@ class QueryKnowledgeHubTool:
         include_sources: bool,
         include_citations: bool,
         trace: Optional[Any],
+        request_context: Optional[RequestContext] = None,
     ) -> MCPToolResponse:
         answer_settings = self._answer_generation_settings()
         status = assess_retrieval_status(
@@ -806,10 +845,42 @@ class QueryKnowledgeHubTool:
         )
 
         warnings: list[str] = []
+        rerank_metadata = dict(getattr(trace, "metadata", {}).get("rerank_metadata", {}) or {}) if trace else {}
+        if rerank_metadata.get("used_fallback"):
+            warnings.append("RERANK_FALLBACK_USED")
+        if rerank_metadata.get("error_code"):
+            warnings.append(str(rerank_metadata["error_code"]))
         fallback_reason: Optional[str] = None
         llm_latency_ms = 0.0
+        retryable = False
+        refused = False
+        refusal_reason: Optional[str] = None
 
-        if status == RetrievalStatus.NO_RESULTS:
+        safety_settings = getattr(getattr(self.settings, "response", None), "safety", None)
+        safety_enabled = bool(getattr(safety_settings, "prompt_injection_detection", True))
+        safety_before = self._get_prompt_injection_detector().check(
+            query=query,
+            contexts=contexts,
+        ) if safety_enabled else None
+        if safety_before is not None:
+            warnings.extend(safety_before.warnings)
+
+        pre_decision = self._get_refusal_policy().decide(
+            query=query,
+            results=results,
+            retrieval_status=status,
+            warnings=warnings,
+            prompt_injection=bool(safety_before and safety_before.detected),
+        )
+
+        if pre_decision.should_refuse:
+            answer = pre_decision.message or self._no_results_answer(query, language)
+            warnings.extend(pre_decision.warnings)
+            refused = True
+            refusal_reason = pre_decision.reason
+            retryable = pre_decision.retryable
+            fallback_reason = (pre_decision.reason or "refused").lower()
+        elif status == RetrievalStatus.NO_RESULTS:
             answer = self._no_results_answer(query, language)
             warnings.append("NO_RETRIEVAL_RESULTS")
             fallback_reason = "no_results"
@@ -835,27 +906,128 @@ class QueryKnowledgeHubTool:
                 warnings.extend(generated.warnings)
                 fallback_reason = generated.fallback_reason
             except Exception as exc:
-                logger.warning("Answer generation failed, using grounded fallback: %s", exc)
+                logger.warning(
+                    "Answer generation failed, using grounded fallback: error_type=%s",
+                    type(exc).__name__,
+                )
                 answer = self._answer_generation_failed_answer(contexts, query, language)
                 warnings.append("ANSWER_GENERATION_FAILED")
                 fallback_reason = "answer_generation_failed"
+                retryable = True
 
         if bool(getattr(getattr(answer_settings, "hallucination_guard", None), "enabled", True)):
             guard_result = self._hallucination_guard.validate(answer, contexts, status)
             answer = guard_result.answer
             warnings.extend(guard_result.warnings)
 
+        safety_after = self._get_prompt_injection_detector().check(answer=answer) if safety_enabled else None
+        if safety_after is not None:
+            warnings.extend(safety_after.warnings)
+
+        claim_settings = getattr(getattr(self.settings, "response", None), "claim_extraction", None)
+        claim_extractor = self._get_claim_extractor()
+        claims = claim_extractor.extract(answer) if bool(getattr(claim_settings, "enabled", True)) else []
+        citation_records = [CitationRecord.from_context(context) for context in contexts]
+        citation_settings = getattr(getattr(self.settings, "response", None), "citation_verification", None)
+        if bool(getattr(citation_settings, "enabled", True)):
+            citation_verification = self._get_citation_verifier().verify(
+                answer=answer,
+                claims=claims,
+                contexts=contexts,
+                citations=citation_records,
+                request_context=request_context,
+            )
+        else:
+            citation_verification = self._get_citation_verifier().verify(
+                answer=answer,
+                claims=[],
+                contexts=contexts,
+                citations=citation_records,
+                request_context=request_context,
+            )
+        warnings.extend(citation_verification.warnings)
+
+        conflict_settings = getattr(getattr(self.settings, "response", None), "source_conflict", None)
+        conflict_result = (
+            self._get_source_conflict_detector().detect(contexts)
+            if bool(getattr(conflict_settings, "enabled", True))
+            else type("EmptyConflict", (), {"conflicts": [], "warnings": []})()
+        )
+        warnings.extend(conflict_result.warnings)
+        if conflict_result.conflicts and not pre_decision.should_refuse:
+            conflict_notice = (
+                "The knowledge-base sources conflict and require human confirmation."
+                if self._use_english(query, language)
+                else "知识库来源存在冲突，需要人工确认。"
+            )
+            if conflict_notice not in answer:
+                answer = f"{answer.rstrip()}\n\n{conflict_notice}"
+
+        post_decision = self._get_refusal_policy().decide(
+            query=query,
+            results=results,
+            retrieval_status=status,
+            citation_result=citation_verification,
+            warnings=warnings,
+            prompt_injection=bool(
+                (safety_before and safety_before.detected)
+                or (safety_after and safety_after.detected)
+            ),
+            permission_denied="UNAUTHORIZED_CITATION_REMOVED" in citation_verification.warnings,
+            answer=answer,
+        )
+        if post_decision.should_refuse:
+            answer = post_decision.message or answer
+            warnings.extend(post_decision.warnings)
+            refused = True
+            refusal_reason = post_decision.reason
+            retryable = retryable or post_decision.retryable
+            fallback_reason = (post_decision.reason or "refused").lower()
+
+        valid_citation_ids = {record.citation_id for record in citation_verification.valid_citations}
+        safe_contexts = [context for context in contexts if context.citation_id in valid_citation_ids]
+        safe_results = [result for result in results if result.chunk_id in {context.chunk_id for context in safe_contexts}]
+        if not safe_contexts and not contexts:
+            safe_contexts = []
+
+        confidence_settings = getattr(getattr(self.settings, "response", None), "confidence", None)
+        confidence_result = self._get_confidence_scorer().score(
+            answer=answer,
+            results=results,
+            contexts=safe_contexts,
+            retrieval_status=status,
+            citation_result=citation_verification,
+            source_conflicts=conflict_result.conflicts,
+            refused=refused,
+        ) if bool(getattr(confidence_settings, "enabled", True)) else self._get_confidence_scorer().score(
+            answer=answer,
+            results=results,
+            contexts=safe_contexts,
+            retrieval_status=status,
+            citation_result=citation_verification,
+            source_conflicts=conflict_result.conflicts,
+            refused=refused,
+        )
+
         warnings = self._dedupe(warnings)
         grounded = self._grounded_answer_builder.build(
             query=query,
             generated_answer=answer,
-            contexts=contexts,
+            contexts=safe_contexts,
             retrieval_status=status,
             collection=collection,
             trace_id=getattr(trace, "trace_id", None),
             warnings=warnings,
             include_sources=include_sources,
             include_citations=include_citations,
+            citation_records=citation_verification.valid_citations,
+            refused=refused,
+            refusal_reason=refusal_reason,
+            confidence_result=confidence_result,
+            citation_verification=citation_verification,
+            claims=claims,
+            source_conflicts=conflict_result.conflicts,
+            rerank_metadata=rerank_metadata,
         )
         payload = grounded.to_dict()
         payload.update({
@@ -863,9 +1035,10 @@ class QueryKnowledgeHubTool:
             "language": language,
             "llm_latency_ms": round(llm_latency_ms, 2),
             "fallback_reason": fallback_reason,
+            "retryable": retryable,
         })
 
-        citations = self._response_builder.citation_generator.generate(results)
+        citations = self._response_builder.citation_generator.generate(safe_results)
         response = MCPToolResponse(
             content=self._format_answer_content(payload),
             citations=citations if include_citations else [],
@@ -881,6 +1054,15 @@ class QueryKnowledgeHubTool:
             answer_length=len(answer),
             citation_count=len(payload["citations"]),
             hallucination_warnings=warnings,
+            refused=refused,
+            refusal_reason=refusal_reason,
+            confidence=confidence_result.label,
+            confidence_score=confidence_result.score,
+            confidence_factors=confidence_result.factors,
+            citation_verification=citation_verification.to_dict(),
+            unsupported_claim_count=citation_verification.unsupported_claim_count,
+            citation_coverage=citation_verification.citation_coverage,
+            invalid_citations=citation_verification.invalid_citations,
             llm_latency_ms=round(llm_latency_ms, 2),
             fallback_reason=fallback_reason,
         )
@@ -894,6 +1076,71 @@ class QueryKnowledgeHubTool:
                 timeout_seconds=getattr(answer_settings, "timeout_seconds", 20.0),
             )
         return self._answer_generator
+
+    def _get_claim_extractor(self) -> ClaimExtractor:
+        if self._claim_extractor is None:
+            settings = getattr(getattr(self.settings, "response", None), "claim_extraction", None)
+            provider = str(getattr(settings, "provider", "rule_based")).lower()
+            if provider == "noop" or not bool(getattr(settings, "enabled", True)):
+                self._claim_extractor = NoopClaimExtractor()
+            else:
+                self._claim_extractor = RuleBasedClaimExtractor(
+                    max_claims=getattr(settings, "max_claims", 20)
+                )
+        return self._claim_extractor
+
+    def _get_citation_verifier(self) -> CitationVerifier:
+        if self._citation_verifier is None:
+            settings = getattr(getattr(self.settings, "response", None), "citation_verification", None)
+            self._citation_verifier = CitationVerifier(
+                min_support_score=getattr(settings, "min_support_score", 0.35)
+            )
+        return self._citation_verifier
+
+    def _get_refusal_policy(self) -> RefusalPolicy:
+        if self._refusal_policy is None:
+            settings = getattr(getattr(self.settings, "response", None), "refusal", None)
+            self._refusal_policy = RefusalPolicy(
+                RefusalPolicyConfig(
+                    enabled=bool(getattr(settings, "enabled", True)),
+                    refuse_on_no_context=bool(getattr(settings, "refuse_on_no_context", True)),
+                    refuse_on_low_score=bool(getattr(settings, "refuse_on_low_score", True)),
+                    refuse_on_no_valid_citation=bool(
+                        getattr(settings, "refuse_on_no_valid_citation", True)
+                    ),
+                    refuse_on_prompt_injection=bool(
+                        getattr(settings, "refuse_on_prompt_injection", True)
+                    ),
+                    refuse_on_unsupported_claims=bool(
+                        getattr(settings, "refuse_on_unsupported_claims", True)
+                    ),
+                    low_score_threshold=float(getattr(settings, "low_score_threshold", 0.2)),
+                    max_unsupported_claim_ratio=float(
+                        getattr(settings, "max_unsupported_claim_ratio", 0.35)
+                    ),
+                    min_citation_coverage=float(getattr(settings, "min_citation_coverage", 0.5)),
+                )
+            )
+        return self._refusal_policy
+
+    def _get_source_conflict_detector(self) -> SourceConflictDetector:
+        if self._source_conflict_detector is None:
+            self._source_conflict_detector = SourceConflictDetector()
+        return self._source_conflict_detector
+
+    def _get_confidence_scorer(self) -> AnswerConfidenceScorer:
+        if self._confidence_scorer is None:
+            settings = getattr(getattr(self.settings, "response", None), "confidence", None)
+            self._confidence_scorer = AnswerConfidenceScorer(
+                high_threshold=getattr(settings, "high_threshold", 0.75),
+                medium_threshold=getattr(settings, "medium_threshold", 0.45),
+            )
+        return self._confidence_scorer
+
+    def _get_prompt_injection_detector(self) -> PromptInjectionDetector:
+        if self._prompt_injection_detector is None:
+            self._prompt_injection_detector = PromptInjectionDetector()
+        return self._prompt_injection_detector
 
     def _answer_generation_settings(self) -> Any:
         response_settings = getattr(self.settings, "response", None)

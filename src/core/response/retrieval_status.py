@@ -101,10 +101,19 @@ def contexts_from_results(
             remaining -= len(text)
 
         metadata = dict(result.metadata or {})
-        page = _coerce_page(metadata.get("page", metadata.get("page_num")))
+        page = _coerce_page(
+            metadata.get(
+                "page",
+                metadata.get(
+                    "page_start",
+                    metadata.get("page_num", getattr(result, "page_number", None)),
+                ),
+            )
+        )
         source = (
             metadata.get("source_path")
             or metadata.get("source")
+            or getattr(result, "source", None)
             or metadata.get("title")
             or "unknown"
         )

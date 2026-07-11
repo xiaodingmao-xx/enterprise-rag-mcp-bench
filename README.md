@@ -213,6 +213,24 @@ python -m pytest -q tests/parser tests/api
 
 ---
 
+## 🔐 P1 可信回答链路
+
+当前 answer 模式在原有 Hybrid Search、Rerank、AnswerGenerator、MCP stdio tool 基础上增加了轻量可信度链路：
+
+`检索 → candidate filtering → rerank → context selection → answer generation → claim extraction → citation verification → refusal/safety → confidence → final response`
+
+- `RerankResult` 保留原有 `results`、`used_fallback` 等字段，并补充 provider、model、输入/输出数量、耗时、timeout、估算成本、错误码和 trace_id；timeout、provider 异常及非法输出仍按原始检索顺序安全 fallback。
+- `CitationRecord` 可从 `RetrievedContext` 或 `RetrievalResult` 构造，保留 document/version/chunk/source/page/quoted span/confidence，并输出兼容旧 citation dict 的别名。
+- `RuleBasedClaimExtractor` 默认按中英文标点提取带 `[C1]` 的事实句、数字/日期/状态/结论句；LLM extractor 仅预留接口且默认关闭。
+- `CitationVerifier` 检查 citation 是否属于当前 contexts、chunk/page 是否有效、claim 是否有证据，并通过现有 ACL policy 移除无权限引用。
+- `RefusalPolicy` 处理无召回、低分、无有效引用、权限不足、prompt injection 和未支持 claim；拒答消息按问题语言返回，拒答原因和 warning 进入结构化 metadata。
+- `PromptInjectionDetector` 和 `SourceConflictDetector` 使用不依赖外部服务的规则，分别输出 `PROMPT_INJECTION_DETECTED` 和 `CONFLICTING_SOURCES`。
+- `AnswerConfidenceScorer` 综合 retrieval/rerank score、supporting chunks、citation coverage、unsupported claim ratio、来源一致性、答案长度、retrieval/refusal 状态，保留旧 `confidence` 并新增 `confidence_score` 与 `confidence_factors`。
+
+answer response metadata 现在包含 `refused`、`refusal_reason`、`citation_verification`、`unsupported_claim_count`、`citation_coverage`、`invalid_citations`、`claims`、`source_conflicts`、`rerank_metadata`、`confidence_score` 和 `warnings`。新增逻辑不要求真实 LLM、rerank API、向量库或外部服务即可测试。
+
+P1 配置位于 `config/settings.yaml` 的 `rerank` 和 `response` 下。retry、cost limit、candidate sampling 已可配置；circuit breaker 和 provider switching 目前只保留轻量状态/配置接口。完整 circuit breaker、自动 provider switching、LLM/NLI claim/citation verifier、NLI 冲突检测和精细成本核算属于 P2。
+
 ## 🚀 快速开始
 
 ### 1. 克隆项目

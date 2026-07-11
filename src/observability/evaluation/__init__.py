@@ -35,3 +35,6 @@ __all__ = [
     "modality_recall_at_k",
     "table_hit_at_k",
 ]
+from src.observability.evaluation.trust_metrics import compute_trust_metrics
+
+__all__ = ["compute_trust_metrics"]

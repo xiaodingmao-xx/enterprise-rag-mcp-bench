@@ -246,6 +246,23 @@ class RerankSettings:
     api_format: str = "dashscope"
     instruct: Optional[str] = None
     return_documents: bool = True
+    fallback_on_error: bool = True
+    retry: Dict[str, Any] = field(default_factory=dict)
+    cost_limit: Dict[str, Any] = field(default_factory=dict)
+    circuit_breaker: Dict[str, Any] = field(default_factory=dict)
+    provider_switching: Dict[str, Any] = field(default_factory=dict)
+    # Flattened aliases keep CoreReranker configuration access simple.
+    retry_enabled: bool = False
+    max_attempts: int = 1
+    backoff_seconds: float = 0.5
+    cost_limit_enabled: bool = False
+    max_candidates_per_query: int = 50
+    max_estimated_cost_per_query: float = 0.05
+    estimated_cost_per_candidate: float = 0.001
+    circuit_breaker_enabled: bool = False
+    failure_threshold: int = 5
+    reset_after_seconds: float = 60.0
+    provider_switching_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -443,6 +460,53 @@ class HallucinationGuardSettings:
 
 
 @dataclass(frozen=True)
+class ClaimExtractionSettings:
+    enabled: bool = True
+    provider: str = "rule_based"
+    max_claims: int = 20
+    llm: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CitationVerificationSettings:
+    enabled: bool = True
+    min_support_score: float = 0.35
+    require_citations_for_factual_claims: bool = True
+    allow_uncited_refusal_answer: bool = True
+
+
+@dataclass(frozen=True)
+class RefusalSettings:
+    enabled: bool = True
+    refuse_on_no_context: bool = True
+    refuse_on_low_score: bool = True
+    refuse_on_no_valid_citation: bool = True
+    refuse_on_prompt_injection: bool = True
+    refuse_on_unsupported_claims: bool = True
+    low_score_threshold: float = 0.2
+    max_unsupported_claim_ratio: float = 0.35
+    min_citation_coverage: float = 0.5
+
+
+@dataclass(frozen=True)
+class ConfidenceSettings:
+    enabled: bool = True
+    high_threshold: float = 0.75
+    medium_threshold: float = 0.45
+
+
+@dataclass(frozen=True)
+class SourceConflictSettings:
+    enabled: bool = True
+    strict_mode: bool = False
+
+
+@dataclass(frozen=True)
+class SafetySettings:
+    prompt_injection_detection: bool = True
+
+
+@dataclass(frozen=True)
 class AnswerGenerationSettings:
     enabled: bool = True
     default_mode: str = "contexts"
@@ -461,6 +525,12 @@ class ResponseSettings:
     answer_generation: AnswerGenerationSettings = field(
         default_factory=AnswerGenerationSettings
     )
+    claim_extraction: ClaimExtractionSettings = field(default_factory=ClaimExtractionSettings)
+    citation_verification: CitationVerificationSettings = field(default_factory=CitationVerificationSettings)
+    refusal: RefusalSettings = field(default_factory=RefusalSettings)
+    confidence: ConfidenceSettings = field(default_factory=ConfidenceSettings)
+    source_conflict: SourceConflictSettings = field(default_factory=SourceConflictSettings)
+    safety: SafetySettings = field(default_factory=SafetySettings)
 
 
 @dataclass(frozen=True)
@@ -623,6 +693,12 @@ class Settings:
             response = _require_mapping(data, "response", "settings")
             answer_generation = _optional_mapping(response.get("answer_generation"))
             guard_settings = _optional_mapping(answer_generation.get("hallucination_guard"))
+            claim_settings = _optional_mapping(response.get("claim_extraction"))
+            citation_settings = _optional_mapping(response.get("citation_verification"))
+            refusal_settings = _optional_mapping(response.get("refusal"))
+            confidence_settings = _optional_mapping(response.get("confidence"))
+            conflict_settings = _optional_mapping(response.get("source_conflict"))
+            safety_settings = _optional_mapping(response.get("safety"))
             response_settings = ResponseSettings(
                 answer_generation=AnswerGenerationSettings(
                     enabled=bool(answer_generation.get("enabled", True)),
@@ -653,10 +729,73 @@ class Settings:
                     hallucination_guard=HallucinationGuardSettings(
                         enabled=bool(guard_settings.get("enabled", True))
                     ),
-                )
+                ),
+                claim_extraction=ClaimExtractionSettings(
+                    enabled=bool(claim_settings.get("enabled", True)),
+                    provider=str(claim_settings.get("provider", "rule_based")),
+                    max_claims=_int_or_default(claim_settings.get("max_claims"), 20, 1),
+                    llm=_optional_mapping(claim_settings.get("llm")),
+                ),
+                citation_verification=CitationVerificationSettings(
+                    enabled=bool(citation_settings.get("enabled", True)),
+                    min_support_score=_float_or_default(
+                        citation_settings.get("min_support_score"), 0.35, 0.0
+                    ),
+                    require_citations_for_factual_claims=bool(
+                        citation_settings.get("require_citations_for_factual_claims", True)
+                    ),
+                    allow_uncited_refusal_answer=bool(
+                        citation_settings.get("allow_uncited_refusal_answer", True)
+                    ),
+                ),
+                refusal=RefusalSettings(
+                    enabled=bool(refusal_settings.get("enabled", True)),
+                    refuse_on_no_context=bool(refusal_settings.get("refuse_on_no_context", True)),
+                    refuse_on_low_score=bool(refusal_settings.get("refuse_on_low_score", True)),
+                    refuse_on_no_valid_citation=bool(
+                        refusal_settings.get("refuse_on_no_valid_citation", True)
+                    ),
+                    refuse_on_prompt_injection=bool(
+                        refusal_settings.get("refuse_on_prompt_injection", True)
+                    ),
+                    refuse_on_unsupported_claims=bool(
+                        refusal_settings.get("refuse_on_unsupported_claims", True)
+                    ),
+                    low_score_threshold=_float_or_default(
+                        refusal_settings.get("low_score_threshold"), 0.2, 0.0
+                    ),
+                    max_unsupported_claim_ratio=_float_or_default(
+                        refusal_settings.get("max_unsupported_claim_ratio"), 0.35, 0.0
+                    ),
+                    min_citation_coverage=_float_or_default(
+                        refusal_settings.get("min_citation_coverage"), 0.5, 0.0
+                    ),
+                ),
+                confidence=ConfidenceSettings(
+                    enabled=bool(confidence_settings.get("enabled", True)),
+                    high_threshold=_float_or_default(
+                        confidence_settings.get("high_threshold"), 0.75, 0.0
+                    ),
+                    medium_threshold=_float_or_default(
+                        confidence_settings.get("medium_threshold"), 0.45, 0.0
+                    ),
+                ),
+                source_conflict=SourceConflictSettings(
+                    enabled=bool(conflict_settings.get("enabled", True)),
+                    strict_mode=bool(conflict_settings.get("strict_mode", False)),
+                ),
+                safety=SafetySettings(
+                    prompt_injection_detection=bool(
+                        safety_settings.get("prompt_injection_detection", True)
+                    )
+                ),
             )
 
         rerank_top_k = _require_int(rerank, "top_k", "rerank")
+        rerank_retry = _optional_mapping(rerank.get("retry"))
+        rerank_cost = _optional_mapping(rerank.get("cost_limit"))
+        rerank_circuit = _optional_mapping(rerank.get("circuit_breaker"))
+        rerank_switching = _optional_mapping(rerank.get("provider_switching"))
 
         observability_redaction = _optional_mapping(observability.get("redaction"))
         observability_trace = _optional_mapping(observability.get("trace"))
@@ -920,6 +1059,7 @@ class Settings:
                         rerank.get("fallback_on_error", True),
                     )
                 ),
+                fallback_on_error=bool(rerank.get("fallback_on_error", True)),
                 api_key=(
                     str(rerank.get("api_key")).strip()
                     if rerank.get("api_key") is not None
@@ -943,6 +1083,33 @@ class Settings:
                     else None
                 ),
                 return_documents=bool(rerank.get("return_documents", True)),
+                retry=rerank_retry,
+                cost_limit=rerank_cost,
+                circuit_breaker=rerank_circuit,
+                provider_switching=rerank_switching,
+                retry_enabled=bool(rerank_retry.get("enabled", rerank.get("retry_enabled", False))),
+                max_attempts=_int_or_default(rerank_retry.get("max_attempts"), 1, 1),
+                backoff_seconds=_float_or_default(rerank_retry.get("backoff_seconds"), 0.5, 0.0),
+                cost_limit_enabled=bool(rerank_cost.get("enabled", rerank.get("cost_limit_enabled", False))),
+                max_candidates_per_query=_int_or_default(
+                    rerank_cost.get("max_candidates_per_query"), 50, 1
+                ),
+                max_estimated_cost_per_query=_float_or_default(
+                    rerank_cost.get("max_estimated_cost_per_query"), 0.05, 0.0
+                ),
+                estimated_cost_per_candidate=_float_or_default(
+                    rerank_cost.get("estimated_cost_per_candidate"), 0.001, 0.0
+                ),
+                circuit_breaker_enabled=bool(
+                    rerank_circuit.get("enabled", rerank.get("circuit_breaker_enabled", False))
+                ),
+                failure_threshold=_int_or_default(rerank_circuit.get("failure_threshold"), 5, 1),
+                reset_after_seconds=_float_or_default(
+                    rerank_circuit.get("reset_after_seconds"), 60.0, 0.001
+                ),
+                provider_switching_enabled=bool(
+                    rerank_switching.get("enabled", rerank.get("provider_switching_enabled", False))
+                ),
             ),
             evaluation=EvaluationSettings(
                 enabled=_require_bool(evaluation, "enabled", "evaluation"),

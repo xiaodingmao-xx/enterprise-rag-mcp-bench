@@ -109,6 +109,22 @@ rerank:
   output_top_k: 5
   timeout_seconds: 10
   fallback_on_timeout: true
+  fallback_on_error: true
+  retry:
+    enabled: false
+    max_attempts: 1
+    backoff_seconds: 0.5
+  cost_limit:
+    enabled: false
+    max_candidates_per_query: 50
+    max_estimated_cost_per_query: 0.05
+    estimated_cost_per_candidate: 0.001
+  circuit_breaker:
+    enabled: false
+    failure_threshold: 5
+    reset_after_seconds: 60
+  provider_switching:
+    enabled: false
   return_documents: true
 
 evaluation:
@@ -208,6 +224,36 @@ response:
     timeout_seconds: 20
     hallucination_guard:
       enabled: true
+  claim_extraction:
+    enabled: true
+    provider: "rule_based"
+    max_claims: 20
+    llm:
+      enabled: false
+  citation_verification:
+    enabled: true
+    min_support_score: 0.35
+    require_citations_for_factual_claims: true
+    allow_uncited_refusal_answer: true
+  refusal:
+    enabled: true
+    refuse_on_no_context: true
+    refuse_on_low_score: true
+    refuse_on_no_valid_citation: true
+    refuse_on_prompt_injection: true
+    refuse_on_unsupported_claims: true
+    low_score_threshold: 0.2
+    max_unsupported_claim_ratio: 0.35
+    min_citation_coverage: 0.5
+  confidence:
+    enabled: true
+    high_threshold: 0.75
+    medium_threshold: 0.45
+  source_conflict:
+    enabled: true
+    strict_mode: false
+  safety:
+    prompt_injection_detection: true
 
 ingestion:
   chunk_size: 1000
