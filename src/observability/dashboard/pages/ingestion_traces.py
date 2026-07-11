@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict
 
 import streamlit as st
 
+from src.observability.dashboard.pages.data_browser import (
+    IMAGE_PREVIEW_WIDTH,
+    _image_preview_error,
+)
 from src.observability.dashboard.services.trace_service import TraceService
 from src.observability.redaction import redact_text
+
+DEFAULT_IMAGE_PREVIEW_LIMIT = 20
 
 
 def _is_already_processed_trace(trace: Dict[str, Any], stages_by_name: Dict[str, Any]) -> bool:
@@ -34,7 +41,7 @@ def render() -> None:
         return
 
     st.subheader(f"Trace history ({len(traces)})")
-    st.dataframe(service.trace_rows(limit=len(traces)), use_container_width=True, hide_index=True)
+    st.dataframe(service.trace_rows(limit=len(traces)), width="stretch", hide_index=True)
 
     for index, trace in enumerate(traces):
         trace_id = str(trace.get("trace_id", "unknown"))
@@ -76,9 +83,64 @@ def _render_trace_summary(trace: Dict[str, Any], service: TraceService) -> None:
             }
             for row in rows
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
+    _render_trace_images(trace, service)
+
+
+def _render_trace_images(trace: dict[str, Any], service: TraceService) -> None:
+    """Render a bounded, safe image gallery for one ingestion trace."""
+    trace_id = str(trace.get("trace_id", "unknown"))
+    try:
+        images = service.get_trace_images(trace)
+    except Exception as exc:  # Trace views must stay usable if the index is unavailable.
+        st.warning(f"Images could not be loaded for this trace: {exc}")
+        return
+
+    if not images:
+        return
+
+    st.divider()
+    st.subheader(f"Images ({len(images)})")
+    show_all = st.checkbox(
+        f"Show all {len(images)} images",
+        value=False,
+        key=f"trace_images_show_all_{trace_id}",
+        disabled=len(images) <= DEFAULT_IMAGE_PREVIEW_LIMIT,
+    )
+    visible_images = images if show_all else images[:DEFAULT_IMAGE_PREVIEW_LIMIT]
+    if len(images) > len(visible_images):
+        st.caption(
+            f"Showing the first {len(visible_images)} images. Select the checkbox to show all."
+        )
+
+    columns = st.columns(min(4, len(visible_images)))
+    for index, image in enumerate(visible_images):
+        with columns[index % len(columns)]:
+            image_id = str(image.get("image_id", "image"))
+            page_num = image.get("page_num")
+            page_suffix = f" · page {page_num}" if page_num is not None else ""
+            error = image.get("error")
+            if error:
+                st.caption(f"{image_id}{page_suffix} ({error})")
+                continue
+
+            image_path = Path(str(image.get("file_path", "")))
+            preview_error = _image_preview_error(
+                image_path, preview_width=IMAGE_PREVIEW_WIDTH
+            )
+            if preview_error:
+                st.caption(f"{image_id}{page_suffix} ({preview_error})")
+                continue
+            try:
+                st.image(
+                    str(image_path),
+                    caption=f"{image_id}{page_suffix}",
+                    width=IMAGE_PREVIEW_WIDTH,
+                )
+            except (OSError, ValueError) as exc:
+                st.caption(f"{image_id}{page_suffix} (preview failed: {exc})")
 
 
 def _render_load_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:

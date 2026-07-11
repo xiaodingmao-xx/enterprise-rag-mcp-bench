@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
+from src.ingestion.storage.image_storage import ImageStorage
 from src.observability.dashboard.services.trace_service import TraceService
 
 
@@ -118,3 +120,133 @@ class TestTraceService:
     def test_format_china_time_converts_utc_timestamp(self):
         result = TraceService.format_china_time("2026-06-26T13:45:11+00:00")
         assert result == "2026-06-26 21:45:11"
+
+    def test_get_trace_images_returns_registered_image(self, tmp_path: Path):
+        images_root = tmp_path / "images"
+        image_path = images_root / "default" / "doc_image.png"
+        image_path.parent.mkdir(parents=True)
+        Image.new("RGB", (24, 24), color="white").save(image_path)
+        index_path = tmp_path / "image_index.db"
+        ImageStorage(db_path=str(index_path), images_root=str(images_root)).register_image(
+            "doc_image",
+            image_path,
+            collection="default",
+            doc_hash="doc_hash",
+            page_num=3,
+        )
+        trace = {
+            "stages": [
+                {
+                    "stage": "upsert",
+                    "data": {
+                        "image_store": {
+                            "images": [
+                                {
+                                    "image_id": "doc_image",
+                                    "file_path": "/untrusted/path.png",
+                                    "page": 3,
+                                    "doc_hash": "doc_hash",
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+
+        images = TraceService(
+            tmp_path / "traces.jsonl",
+            image_index_path=index_path,
+            images_root=images_root,
+        ).get_trace_images(trace)
+
+        assert images == [
+            {
+                "image_id": "doc_image",
+                "page_num": 3,
+                "file_path": str(image_path.resolve()),
+                "error": None,
+            }
+        ]
+
+    def test_get_trace_images_reports_unregistered_trace_image(self, tmp_path: Path):
+        trace = {
+            "stages": [
+                {
+                    "stage": "upsert",
+                    "data": {"image_store": {"images": [{"image_id": "missing"}]}},
+                }
+            ]
+        }
+
+        images = TraceService(
+            tmp_path / "traces.jsonl",
+            image_index_path=tmp_path / "missing.db",
+            images_root=tmp_path / "images",
+        ).get_trace_images(trace)
+
+        assert images == [
+            {
+                "image_id": "missing",
+                "page_num": None,
+                "file_path": "",
+                "error": "not registered in image index",
+            }
+        ]
+
+    def test_get_trace_images_rejects_registered_path_outside_image_root(self, tmp_path: Path):
+        images_root = tmp_path / "images"
+        external_image = tmp_path / "external.png"
+        Image.new("RGB", (24, 24), color="white").save(external_image)
+        index_path = tmp_path / "image_index.db"
+        ImageStorage(db_path=str(index_path), images_root=str(images_root)).register_image(
+            "external",
+            external_image,
+            doc_hash="doc_hash",
+        )
+        trace = {
+            "stages": [
+                {
+                    "stage": "upsert",
+                    "data": {"image_store": {"images": [{"image_id": "external"}]}},
+                }
+            ]
+        }
+
+        images = TraceService(
+            tmp_path / "traces.jsonl",
+            image_index_path=index_path,
+            images_root=images_root,
+        ).get_trace_images(trace)
+
+        assert images[0]["error"] == "image path is outside the configured image storage"
+
+    def test_get_trace_images_uses_document_hash_for_old_trace(self, tmp_path: Path):
+        images_root = tmp_path / "images"
+        image_path = images_root / "default" / "legacy.png"
+        image_path.parent.mkdir(parents=True)
+        Image.new("RGB", (24, 24), color="white").save(image_path)
+        index_path = tmp_path / "image_index.db"
+        ImageStorage(db_path=str(index_path), images_root=str(images_root)).register_image(
+            "legacy",
+            image_path,
+            collection="default",
+            doc_hash="legacy_hash",
+            page_num=1,
+        )
+        trace = {
+            "stages": [
+                {"stage": "integrity", "data": {"file_hash": "legacy_hash"}},
+                {"stage": "image_index", "data": {"count": 1}},
+            ]
+        }
+
+        images = TraceService(
+            tmp_path / "traces.jsonl",
+            image_index_path=index_path,
+            images_root=images_root,
+        ).get_trace_images(trace)
+
+        assert images[0]["image_id"] == "legacy"
+        assert images[0]["page_num"] == 1
+        assert images[0]["error"] is None
