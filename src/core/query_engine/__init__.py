@@ -35,6 +35,15 @@ from src.core.query_engine.hybrid_search import (
     HybridSearchResult,
     create_hybrid_search,
 )
+from src.core.query_engine.retriever import Retriever
+from src.core.query_engine.retrieval_filter import RetrievalFilter
+from src.core.query_engine.query_rewriter import (
+    LLMQueryRewriter,
+    NoopQueryRewriter,
+    RuleBasedQueryRewriter,
+)
+from src.core.query_engine.score_booster import ScoreBooster
+from src.core.query_engine.tokenizer import DomainTokenizer
 
 __all__ = [
     "QueryProcessor",
@@ -53,4 +62,11 @@ __all__ = [
     "HybridSearchConfig",
     "HybridSearchResult",
     "create_hybrid_search",
+    "Retriever",
+    "RetrievalFilter",
+    "LLMQueryRewriter",
+    "NoopQueryRewriter",
+    "RuleBasedQueryRewriter",
+    "ScoreBooster",
+    "DomainTokenizer",
 ]

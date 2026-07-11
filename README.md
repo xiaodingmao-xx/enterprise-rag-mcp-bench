@@ -11,6 +11,8 @@
 - [快速开始](#-快速开始)
 - [P1 生产 API 与 MCP HTTP Gateway](#p1-生产-api-与-mcp-http-gateway)
 - [P1 OCR、Layout 和表格解析](#p1-ocr、layout-和表格解析)
+- [P1 Chunk、Metadata 和 Contextual Retrieval](#p1-chunkmetadata-和-contextual-retrieval)
+- [P1 检索增强和生产向量后端预留](#p1-检索增强和生产向量后端预留)
 - [谁适合用这个项目 & 怎么用](#-谁适合用这个项目--怎么用)
 - [简历参考](#-简历参考)
 - [常见问题](#-常见问题)
@@ -43,7 +45,9 @@
 |------|------|------|
 | **Ingestion Pipeline** | 多格式文档 → Chunk → Transform → Embedding → Upsert | 支持 PDF / Markdown / TXT / HTML / DOCX / 代码文件摄取，注入结构化 metadata，PDF 保留多模态图片描述（Image Captioning） |
 | **P1 Enhanced Parsing** | ParsedDocument + OCR fallback + Layout + Table | PDF 页面/block/bbox/reading order、结构化表格、图片关联、页眉页脚去重、乱码和质量分级 |
+| **P1 Chunk Governance** | Canonical metadata + quality gate + contextual retrieval | 统一 ChunkMetadata、质量指标/异常标记、section/table/code/parent-child 策略；Contextual LLM 默认关闭并可回退 |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
+| **P1 Retrieval Enhancements** | Filter + rewrite + domain tokenizer + score boost | ACL/租户/元数据过滤、术语保护、规则改写、可追踪加权；Qdrant/OpenSearch/PgVector 仅保留接口占位 |
 | **MCP Server** | 标准 MCP 协议暴露 Tools | `query_knowledge_hub`、`list_collections`、`get_document_summary` |
 | **P1 Production API** | REST API + MCP HTTP Gateway + 生产边界 | JWT/local-dev、RequestContext、租户/用户限流、body limit、分阶段超时、统一错误响应、health live/ready |
 | **Dashboard** | Streamlit 六页面管理平台 | 系统总览 / 数据浏览 / Ingestion 管理 / 摄取追踪 / 查询追踪 / 评估面板 |
@@ -312,9 +316,63 @@ ingestion:
 
 `ingestion.metadata_enrichment` 是新的推荐配置块；旧的 `ingestion.metadata_enricher` 仍保留兼容。缓存默认使用 SQLite，重复 chunk 会直接复用 enrichment 结果，减少 LLM 调用和重复规则计算。
 
+## P1 Chunk、Metadata 和 Contextual Retrieval
+
+这一模块把 Chunk 从“文本 + 松散字典”收敛为可跨解析器、向量库和检索器复用的 metadata 契约：`src/ingestion/chunking/chunk_metadata.py` 定义 `ChunkMetadata`，兼容 `source_path`、`doc_id`、`page_range`、`allowed_users/roles` 等历史字段，并在 chunk、upsert、vector 三个阶段执行校验和向量库安全扁平化。
+
+### Chunk 策略与质量门禁
+
+- 默认仍是 `recursive`，既有 `markdown_header`、`semantic`、`parent_child`、`sliding_window` 行为保持不变。
+- 新增 `section_aware`、`table_aware`、`code_aware`、`contextual_chunk` 策略；表格和 fenced code 会保留结构引用，`parent_child_retrieval` 提供父块索引和上下文读取辅助。
+- `evaluate_chunk_quality()` 输出字符/token/句子/标题/重复率/乱码率/语义边界等指标，并标记 `too_short`、`too_long`、`garbled`、`duplicate`、`orphan`、不完整表格和不完整代码块。
+
+### Contextual Retrieval 安全边界
+
+`NoopContextualizer`、`RuleBasedContextualizer` 和 `LLMContextualizer` 均实现同一接口。LLM 适配器只接收注入的 callable，不绑定外部 SDK；具备内存缓存、token budget、超时、成本上限和规则回退。默认配置中 `ingestion.chunking.contextual_retrieval.enabled: false`、provider 为 `noop`，因此基础安装不会触发 LLM 调用；开启后仍建议保留 `preserve_original_text` 和 content hash 以保证幂等 chunk ID。
+
+```yaml
+ingestion:
+  chunking:
+    strategy: recursive
+    metadata:
+      validate_after_chunk: true
+      validate_before_upsert: true
+      validate_on_query_return: true
+    contextual_retrieval:
+      enabled: false
+      provider: noop
+      llm:
+        enabled: false
+        timeout_seconds: 20
+        token_budget: 512
+        fallback_on_error: true
+```
+
+## P1 检索增强和生产向量后端预留
+
+检索层新增统一 `Retriever.search()` 约定和 `RetrievalFilter`。过滤器支持 tenant/document/source type/version/tags/time range/department，并在请求上下文合并后执行租户和 ACL 边界；Dense、Sparse、Hybrid 都保留底层原生过滤与结果 post-filter 双保险。`RetrievalResult` 统一提供 source、document/version、page、retrieval route 和 trace 字段。
+
+### 查询增强与可解释排序
+
+- `NoopQueryRewriter`、`RuleBasedQueryRewriter` 和注入式 `LLMQueryRewriter` 支持缩写、同义词、多查询候选、缓存、超时、token budget 和安全回退。
+- `DomainTokenizer` 由 QueryProcessor 与 SparseEncoder 共用，保护 `gpt-4`、`machine-learning`、`Qwen3.7`、`text-embedding-v4` 等企业术语；可配置用户词典、停用词和字符 n-gram。
+- `ScoreBooster` 支持 title、heading、tag、exact phrase 和 source type 加权，并把 `boost_reasons` 写入结果 metadata，便于 trace 和离线分析。
+
+### 向量后端策略
+
+Chroma + SQLite FTS5/BM25 仍是默认、可本地运行的后端。`VectorStoreFactory` 已登记 `qdrant`、`opensearch`、`pgvector`，当前仅提供配置校验和明确的 `NotImplementedError` 占位，不会偷偷引入客户端依赖或宣称已完成生产适配；接入真实后端时只需实现 `BaseVectorStore` 的 upsert/query 契约和对应 metadata filter。
+
+消融脚本保留原有四种模式，并新增候选数、`latency_p50_ms`/`latency_p95_ms`/`latency_p99_ms`、rerank latency、cost estimate 和 ablation config 输出：
+
+```bash
+python scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank \
+  --top-k 10 --dense-top-k 20 --sparse-top-k 20 --fusion-top-k 10 \
+  --query-rewrite-enabled --title-boost 1.2 --markdown
+```
+
 ### 7. 消融评估（Ablation Evaluation）
 
-项目提供 `scripts/run_ablation_eval.py` 对比四种检索模式：`dense`、`bm25`、`hybrid`、`hybrid_rerank`。脚本会读取 golden test set，计算 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，并将结果保存到 `eval/results/{timestamp}.json`。
+项目提供 `scripts/run_ablation_eval.py` 对比四种检索模式：`dense`、`bm25`、`hybrid`、`hybrid_rerank`。脚本会读取 golden test set，计算 `Recall@K`、`Precision@K`、`MRR@K`、`NDCG@K`，并将结果保存到 `eval/results/{timestamp}.json`；每个 mode 还会记录候选数、P50/P95/P99 延迟、rerank latency 和可选成本估算。
 
 ```bash
 python scripts/run_ablation_eval.py --modes dense bm25 hybrid hybrid_rerank --top-k 10 --collection default --markdown

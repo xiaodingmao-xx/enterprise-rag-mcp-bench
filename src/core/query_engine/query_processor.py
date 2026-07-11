@@ -17,9 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Pattern, Set
 
-import jieba
-
 from src.core.types import ProcessedQuery
+from src.core.query_engine.tokenizer import DomainTokenizer, TokenizerConfig
 
 
 # Default stopwords for Chinese
@@ -91,6 +90,7 @@ class QueryProcessorConfig:
     min_keyword_length: int = 1
     max_keywords: int = 20
     enable_filter_parsing: bool = True
+    tokenizer: Dict[str, Any] = field(default_factory=dict)
 
 
 class QueryProcessor:
@@ -113,6 +113,13 @@ class QueryProcessor:
             config: Optional configuration. Uses defaults if not provided.
         """
         self.config = config or QueryProcessorConfig()
+        self._domain_tokenizer = DomainTokenizer(
+            TokenizerConfig(**{key: value for key, value in self.config.tokenizer.items() if key in TokenizerConfig.__dataclass_fields__}),
+            # QueryProcessor owns the legacy stopword contract.  Keeping the
+            # tokenizer neutral also makes add/remove_stopwords take effect
+            # immediately after construction.
+            stopwords=(),
+        )
     
     def process(self, query: str) -> ProcessedQuery:
         """Process a user query into structured format.
@@ -220,21 +227,7 @@ class QueryProcessor:
         Returns:
             List of tokens
         """
-        tokens: List[str] = []
-
-        # Use jieba to segment (handles Chinese + keeps English intact)
-        raw_tokens = jieba.lcut(text)
-
-        for token in raw_tokens:
-            token = token.strip()
-            if not token:
-                continue
-            # Skip pure punctuation / whitespace
-            if re.fullmatch(r'[\s\W]+', token, re.UNICODE):
-                continue
-            tokens.append(token)
-        
-        return tokens
+        return self._domain_tokenizer.tokenize(text)
     
     def _filter_keywords(self, tokens: List[str]) -> List[str]:
         """Filter tokens to get meaningful keywords.

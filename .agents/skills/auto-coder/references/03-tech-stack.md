@@ -953,3 +953,183 @@ Hybrid Search 命中 Chunk（正文含 "[图片描述: 系统采用三层架构.
 ### 安全 Trace 与审计日志
 
 `logs/traces.jsonl` 只保存安全 debug trace，默认不保存完整文档、chunk、prompt 或 API Key；`logs/operational.jsonl` 保存低基数运行字段；`logs/audit.jsonl` 独立保存租户、用户 hash、工具、资源、document_id、权限拒绝和成功状态。`src/observability/redaction.py` 负责 PII/secret/path 脱敏，`TraceService.delete_trace()` 提供单条 debug trace 删除接口，retention 配置负责轮转和过期清理。Dashboard 只展示 `trace_id/stage/duration/status/error_code/document_id/chunk_id/redacted_preview`。
+
+## 3.6.1 P1 生产 API、MCP HTTP Gateway 与限流模块
+
+### 现状检查与增量策略
+
+P1 开始前对现有实现做了逐项检查：
+
+| 能力 | 结论 | 处理方式 |
+|---|---|---|
+| `RequestContext`、tenant/ACL | `partially_implemented` | 复用 `src/security/context.py`、`policy.py`、`acl_filter.py`，补齐 API transport 字段和边界适配 |
+| stdio MCP server、tool schema | `already_implemented` | 保留 `main.py`、`server.py`、`ProtocolHandler` 和三个既有 tool，不重写 |
+| document version store、ingestion task queue | `already_implemented` | API service 通过 facade/adapter 复用；版本接口在未配置 store 时明确返回 `NOT_IMPLEMENTED` |
+| REST API、FastAPI 入口、health、HTTP Gateway、限流、body limit、统一 API error | `missing` | 新增 `src/api/` 与 HTTP MCP adapter |
+
+### 分层结构
+
+P1 的 HTTP 边界只负责协议解析、Pydantic 参数校验、上下文注入、错误转换和超时包装；业务逻辑位于 core service：
+
+- `src/api/app.py`：FastAPI `create_app()` factory、middleware 组装和 uvicorn app 对象。
+- `src/api/middleware/`：`RequestContextMiddleware`、`AuthenticationMiddleware`、`RateLimitMiddleware`、`BodyLimitMiddleware`、超时辅助函数。
+- `src/api/routes/`：REST query/documents/collections/ingestion、health 和 MCP Gateway 路由。
+- `src/api/errors.py`：统一 `APIError` 与安全错误响应。
+- `src/core/query_service.py`、`document_service.py`、`collection_service.py`、`ingestion_service.py`、`permission_service.py`：REST 与 MCP Gateway 的共享 service facade。
+
+### API 契约
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/health/live` | 只表示进程存活，不检查外部依赖 |
+| GET | `/health/ready` | 检查配置和可注入的本地依赖；失败返回 503，不调用真实 LLM/Embedding |
+| POST | `/v1/query` | `query/top_k/collection_id/use_rerank/use_llm/filters`，返回 answer/citations/chunks/latency_ms |
+| POST | `/v1/documents` | 创建文档元数据；带 content 时通过 ingestion service 提交异步 job |
+| GET/DELETE | `/v1/documents/{document_id}` | 租户校验后查询/删除，不直接绕过 DocumentManager |
+| GET | `/v1/collections` | 只列出当前 tenant 的 collection |
+| POST/GET | `/v1/ingestion/jobs`、`/{job_id}` | 创建、查询本地 task queue job，job 查询校验 tenant |
+| GET/POST | `/v1/documents/{document_id}/versions`、`rollback` | 复用 version store；未配置时返回 501 |
+
+### RequestContext、认证与权限
+
+`RequestContext` 现在包含 `request_id`、`trace_id`、`tenant_id`、`user_id`、`roles`、`auth_source/auth_mode`、`client_host` 和 `user_agent`。请求优先透传 `X-Request-ID`，没有则生成 UUID；`X-Trace-ID` 缺省使用 request ID。原始 Authorization/JWT 不进入日志或错误响应。
+
+- `local-dev`：仅允许 development/test；从 `X-Tenant-ID`、`X-User-ID`、`X-Roles` 读取身份，缺失时使用 `local/local-dev-user/admin`。
+- `jwt`：读取 `Authorization: Bearer`，校验 HS256 签名、`exp`、issuer、audience，并从 claims 注入 tenant/user/roles。
+- `production`：启动时拒绝 `api.auth.mode=local-dev`，缺少 token、token 无效或过期分别返回 `AUTH_REQUIRED`、`INVALID_TOKEN`、`TOKEN_EXPIRED`。
+- `PermissionService` 先校验身份，再比较资源 tenant；REST 和 MCP Gateway 都不能通过参数覆盖可信上下文。
+
+### 限流、请求体和超时
+
+默认内存 backend 按 `tenant:{tenant_id}` 和 `user:{user_id}` 计数，key 不包含 JWT/API Key；触发时返回 429、`RATE_LIMITED` 和 `Retry-After`。`RateLimiterBackend` 抽象预留了 `RedisRateLimiterBackend`，但项目不强制依赖 Redis。
+
+`max_request_body_bytes` 在 middleware 层先检查 Content-Length，并为 chunked body 做累计字节限制，超限返回 413。`run_with_timeout()` 使用 `asyncio.wait_for` 取消下游任务；TimeoutError 转成 `RETRIEVAL_TIMEOUT`、`RERANK_TIMEOUT`、`LLM_TIMEOUT` 或 `INGESTION_TIMEOUT`，CancelledError 原样传播。
+
+### 统一错误与安全响应
+
+所有预期错误返回：
+
+```json
+{
+  "request_id": "...",
+  "error_code": "TENANT_MISMATCH",
+  "message": "The resource belongs to another tenant",
+  "retryable": false
+}
+```
+
+主要映射：认证 401；权限 403；参数 400；资源不存在 404；body 超限 413；限流 429；阶段超时 504；未实现 501；未知异常 500。未知异常只返回 `INTERNAL_ERROR`，不暴露 token、API Key、内部路径和完整堆栈。
+
+### MCP HTTP Gateway
+
+Gateway 提供 `/mcp/tools`、`/mcp/tools/call` 和 `/mcp` JSON-RPC 2.0，同时提供 `/v1/mcp` 别名。tool schema 优先从现有 stdio `ProtocolHandler` 注册表读取，因 REST-only 环境未安装 MCP SDK 时使用等价的只读 schema fallback；实际 stdio server 的入口和行为不变。
+
+Gateway 执行 `query_knowledge_hub`、`list_collections`、`get_document_summary` 时转调相同的 `QueryService`、`CollectionService`、`DocumentService`，并传入同一个 `RequestContext`，因此 tenant mismatch、错误码和 request/trace ID 与 REST API 一致。
+
+### 配置与运行
+
+新增配置位于 `config/settings.yaml` 的 `api` 块：`api.auth`、`api.rate_limit`、`api.limits`、`api.timeout` 和 `api.mcp_gateway`；生产密钥仅通过环境变量注入。运行方式：
+
+```powershell
+python scripts/start_api.py
+# 或
+uvicorn src.api.app:app --host 0.0.0.0 --port 8000
+python -m pytest -q tests/api
+```
+
+P1 新增测试使用 fake service、monkeypatch/内存 backend，不依赖真实 LLM、Embedding、外部 HTTP、Redis 或 MCP transport。完整 version/rollback 只有在注入现有 version store 后才启用，当前仅保留清晰的 NOT_IMPLEMENTED 接口。
+
+## 3.6.2 P1 OCR、Layout 和表格解析模块
+
+### 现状检查与增量策略
+
+本阶段开始前按“先检查、再增量实现”的方式核对现有代码：
+
+| 能力 | 结论 | 处理方式 |
+|---|---|---|
+| `Document`、`BaseLoader`、PDF/Markdown/TXT/HTML/DOCX/代码 Loader | `already_implemented` | 保持既有入口、返回类型和文本内容契约 |
+| PDF 文本/图片提取 | `partially_implemented` | `PdfLoader` 继续负责兼容路径；增强路径通过配置启用并可回退 |
+| `PdfQualityChecker` 与 Chunk metadata | `partially_implemented` | 复用旧检查器，追加结构化质量指标和表格/图片引用 |
+| OCR、Layout block、统一表格结构、页眉页脚识别 | `missing` | 新增可插拔 parser 层和 `ParsedDocument` 输出 |
+| 测试 PDF/扫描页/表格/图片 fixture | `missing` | 新增离线 fixture generator，测试不调用外部 OCR/LLM API |
+
+### 统一模型与解析工厂
+
+新增 `src/libs/loader/parsed_document.py`，定义 `BBox`、`Page`、`Block`、`Table`、`TableCell`、`Image`、`ExtractionQuality` 和 `ParsedDocument`。`ParsedDocument` 同时保留全文、页级结构、block reading order、坐标、表格单元格、图片引用、标题、页眉页脚和质量报告，并通过 `to_document()` 投影回既有 `Document`。
+
+新增 `src/libs/parser/`：
+
+- `BaseParser` 规定 `parse(path) -> ParsedDocument`，`BasicTextParser` 提供纯文本/PDF 的轻量默认实现。
+- `ParserFactory` 按扩展名返回增强 PDF parser 或兼容文本 parser；重依赖采用函数内 lazy import，导入项目不会强制初始化 OCR/table 引擎。
+- `PdfParser` 负责编排 Layout、Table、OCR fallback、页眉页脚和质量评估；`PdfLoader` 在 `enhanced_pdf.enabled` 时优先使用该路径，失败时回退既有 MarkItDown/PyMuPDF 逻辑。
+
+### OCR、Layout、图片与页眉页脚
+
+`OCRParser` 使用 Tesseract/Pillow 的可选能力，以页面文本密度阈值触发 fallback，记录 block bbox、平均置信度和缺依赖/低置信度 warning；OCR 不可用时保留原页面内容，不阻塞普通 PDF 解析。
+
+`LayoutParser` 基于 PyMuPDF page dictionary 生成 paragraph、heading、list、code、formula、caption、image block，并按 page → y → x 生成稳定阅读顺序。图片保留 `image_id/page_number/bbox`，附近 caption 会写入图片 metadata；现有 `Document.metadata.images` 和 `[IMAGE: image_id]` 兼容机制继续有效。
+
+`HeaderFooterDetector` 以跨页重复文本和页码模式识别 header/footer；默认将其从正文 paragraphs 排除，但在 `ParsedDocument.headers/footers` 中保留原 block 与坐标，避免页眉污染向量索引。
+
+### 表格与质量评估
+
+`TableParser` 支持 PyMuPDF 原生 table finder、pdfplumber/camelot 可选引擎和无引擎的文本/网格回退，输出表头、行、`TableCell` 坐标、Markdown、plain text、confidence 和 extraction method。跨页同列数表格会标记 `possible_continuation`，跨页合并作为后续增强能力保留。
+
+质量评估复用并扩展 `src/libs/loader/document_quality.py`，统一计算 text density、garbled ratio、OCR confidence、empty page ratio、duplicate block ratio、table extraction success 和 warnings，并给出 accepted/warning/needs_manual_review/rejected。扫描 PDF 在 OCR 关闭或不可用时不会伪装成高质量文本。
+
+### 集成、配置、依赖与验收
+
+`config/settings.yaml` 和 `config/settings.example.yaml` 新增 `ingestion.parsing.enhanced_pdf`，覆盖 OCR、Layout、tables、headers_footers、quality、`preserve_existing_loader` 和 fallback 行为。`chunk_schema.sync_chunk_metadata()` 仅保留轻量 `parsed_document_id/page_number/bbox/table_refs/image_refs`，不会把整棵解析树复制到每个 Chunk。
+
+新增可选依赖组：`parsing`、`ocr`、`tables`；基础导入不要求本机安装 Tesseract、Camelot 或 pdfplumber。`tests/fixtures/generate_pdf_fixtures.py` 可生成普通文本、扫描页、表格、图片、页眉页脚、跨页表格和乱码 PDF；`tests/parser/` 覆盖模型 round-trip、工厂、OCR 缺依赖/低密度回退、Layout/图片、表格、页眉页脚、质量和兼容 Loader。
+
+明确预留但本阶段不强制完成的能力包括：真实 OCR 引擎部署与语言包管理、跨页表格语义合并、复杂多栏版面/旋转页面、表格视觉纠错、图表理解和视觉 LLM captioning。
+
+## 3.6.3 P1 Chunk、Metadata 和 Contextual Retrieval 模块
+
+### 现状检查与增量策略
+
+本模块必须保留既有 `Chunk`、`DocumentChunker`、`ChunkerFactory` 以及 recursive/markdown_header/semantic/parent_child/sliding_window 策略的行为。新增能力通过结构化 metadata、策略适配器和可选 contextualizer 接入，不改变默认 ingestion/query 主链路；默认 contextual retrieval 关闭，不调用外部 LLM。
+
+### 统一 ChunkMetadata 契约
+
+`src/ingestion/chunking/chunk_metadata.py` 定义 `ChunkMetadata`，至少覆盖以下字段：
+
+| 类别 | 字段 |
+|---|---|
+| 身份与来源 | `tenant_id`、`document_id`、`version_id`、`chunk_id`、`parent_chunk_id`、`source_id`、`source_uri`、`source_type` |
+| 结构定位 | `title`、`heading_path`、`section_path`、`page_start/page_end`、`bbox`、`block_ids`、`table_ids`、`image_ids` |
+| 版本与编码 | `language`、`content_hash`、`parser_version`、`chunker_version`、`embedding_model`、`created_at` |
+| 权限 | `acl_visibility`、`acl_users`、`acl_roles` |
+
+`normalize_chunk_metadata()` 负责把历史 `source_path/doc_id/page_range/allowed_users/allowed_roles` 等别名映射到 canonical 字段；`validate_chunk_metadata()` 在 chunk、upsert/vector 和 query return 边界校验必填字段、页码、bbox、ACL 枚举和时间格式；`to_vector_metadata()` 将 list/dict 展平为 JSON 或 text 字段，满足 Chroma 等后端的 primitive metadata 约束。
+
+### 策略、质量与上下文
+
+- 新增 `section_aware`、`table_aware`、`code_aware`、`contextual_chunk`；表格保留表头和稳定 `table_id`，fenced code 保持代码边界，父子检索通过 `parent_child_retrieval.py` 提供父块索引和非破坏性的上下文截取。
+- `chunk_quality.py` 输出 character/token/sentence/heading、duplicate/garbled/punctuation ratio、semantic boundary score，并产生 too-short/too-long/garbled/duplicate/orphan/incomplete-table/incomplete-code flags。
+- `ChunkContextualizer` 协议提供 `NoopContextualizer`、`RuleBasedContextualizer`、`LLMContextualizer`。LLM 适配器只接受注入 callable，必须具备缓存、超时、token budget、单文档成本上限和 fallback；contextual text 不能覆盖原始内容 hash 和稳定 chunk ID。
+
+### 配置、测试与验收
+
+配置位于 `ingestion.chunking.metadata`、`quality`、`section_aware`、`table_aware`、`code_aware`、`parent_child_retrieval` 和 `contextual_retrieval`。默认 strategy 仍为 `recursive`，`contextual_retrieval.enabled=false`、provider 为 `noop`。测试覆盖 canonical alias、vector flatten、非法 metadata、质量 flags、四种新策略、contextual cache/timeout/fallback 和父块不变性；测试不依赖外部 LLM/OCR/API。
+
+## 3.6.4 P1 检索增强和生产向量后端预留模块
+
+### 统一检索与安全过滤
+
+`src/core/query_engine/retriever.py` 定义统一 `Retriever.search()` 约定；`RetrievalFilter` 支持 tenant/document/source type/version/tags/time range/department，并在请求入口合并可信 `RequestContext`。Dense、Sparse、Hybrid 先尽可能使用后端 native filter，再对 hydrated result 做 post-filter；ACL 不得被用户参数覆盖，结果必须携带 `source/document_id/version_id/page_number/retrieval_route/trace`。
+
+### 查询增强、术语保护与排序
+
+- `NoopQueryRewriter`、`RuleBasedQueryRewriter`、`LLMQueryRewriter` 统一 rewrite result，支持缩写/同义词/候选 query、缓存、超时、token budget 和失败回退；默认关闭。
+- `DomainTokenizer` 由 QueryProcessor 与 SparseEncoder 共用，保护 `gpt-4`、`machine-learning`、`Qwen3.7`、`text-embedding-v4` 等术语，并支持 user dictionary、stopwords 和可选 char n-gram。
+- `ScoreBooster` 在 fusion 后按 title/heading/tag/exact phrase/source type 调整分数，记录 `boost_reasons`；所有调整必须可配置且默认关闭。
+
+### 生产向量后端边界
+
+Chroma 与 SQLite FTS5/BM25 继续作为默认 local-first 后端。`VectorStoreFactory` 登记 `qdrant`、`opensearch`、`pgvector` 三个 provider，但本阶段仅实现配置校验、统一接口和明确 `NotImplementedError` 占位，不引入真实客户端、不声称已完成生产连接。后续 provider 必须实现 `BaseVectorStore` 的 upsert/query、metadata filter、批量/幂等策略和错误映射。
+
+### 消融评估与验收
+
+`scripts/run_ablation_eval.py` 保留 dense/bm25/hybrid/hybrid_rerank 四种模式，新增 dense/sparse/fusion top-k、rrf-k、query rewrite、tokenizer config、score boost 和 vector backend 运行参数；JSON/Markdown 输出保留 IR 指标，并增加 candidate_count、rerank_latency_ms、latency_p50_ms、latency_p95_ms、latency_p99_ms、cost_estimate 和 ablation_config。单元测试使用 fake retriever/backend，不调用真实生产服务。

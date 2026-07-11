@@ -11,6 +11,8 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.core.types import RetrievalResult
+from src.core.query_engine.retrieval_filter import RetrievalFilter, validate_retrieval_filter
+from src.ingestion.chunking.metadata_validator import validate_chunk_metadata
 from src.security.acl_filter import ACLFilter
 from src.security.context import RequestContext
 
@@ -205,6 +207,34 @@ class SparseRetriever:
 
         logger.debug(f"Retrieved {len(results)} results for keywords")
         return results
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        filters: RetrievalFilter | Dict[str, Any] | None = None,
+        request_context: Optional[RequestContext] = None,
+        trace: Optional[Any] = None,
+    ) -> List[RetrievalResult]:
+        from src.core.query_engine.tokenizer import DomainTokenizer
+
+        retrieval_filter = validate_retrieval_filter(filters)
+        if request_context is not None:
+            retrieval_filter = retrieval_filter.merge_with_request_context(request_context)
+        keywords = DomainTokenizer().tokenize(query)
+        if not keywords:
+            return []
+        results = self.retrieve(
+            keywords=keywords,
+            top_k=max(int(top_k), int(top_k) * 3 if retrieval_filter.to_dict() else int(top_k)),
+            filters=retrieval_filter.to_metadata_filter(),
+            request_context=request_context,
+            trace=trace,
+        )
+        results = [result for result in results if retrieval_filter.matches(result.metadata)]
+        for result in results:
+            result.retrieval_route = "sparse"
+        return results[:top_k]
     
     def _validate_keywords(self, keywords: List[str]) -> None:
         """Validate the keywords list.
@@ -291,9 +321,12 @@ class SparseRetriever:
             
             # Validate record has expected fields
             text = record.get('text', '')
-            metadata = record.get('metadata', {})
             
             try:
+                metadata = validate_chunk_metadata(
+                    {**(record.get('metadata', {}) or {}), "chunk_id": chunk_id},
+                    stage="query",
+                )
                 result = RetrievalResult(
                     chunk_id=chunk_id,
                     score=float(score),

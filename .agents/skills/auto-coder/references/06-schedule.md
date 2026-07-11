@@ -27,6 +27,14 @@
    - 目的：实现 RagasEvaluator + CompositeEvaluator + EvalRunner，启用评估面板页面，建立 golden test set 回归基线。
 9. **阶段 I：端到端验收与文档收口**
    - 目的：补齐 E2E 测试（MCP Client 模拟 + Dashboard 冒烟），完善 README，全链路验收，确保“开箱即用 + 可复现”。
+10. **阶段 P1：生产 API、MCP HTTP Gateway 与限流模块**
+   - 目的：在不破坏 stdio MCP 的前提下，增加可通过 HTTP 安全调用的 REST API、MCP Gateway、鉴权、租户隔离、限流、请求保护和统一错误边界。
+11. **阶段 P1-Parsing：OCR、Layout 和表格解析模块**
+   - 目的：在保留既有多格式 Loader、Document 和 Chunking 契约的前提下，增加统一 ParsedDocument、OCR fallback、Layout block、表格/图片/页眉页脚结构和质量分级。
+12. **阶段 P1-Chunk：Chunk、Metadata 和 Contextual Retrieval 模块**
+   - 目的：统一 chunk metadata 与质量校验，增加结构感知分块、父子检索上下文和可控的 contextual retrieval 适配器。
+13. **阶段 P1-Retrieval：检索增强和生产向量后端预留模块**
+   - 目的：统一 Retriever/Filter 契约，补齐 ACL/metadata filter、query rewrite、领域 tokenizer、可解释加权和生产向量后端占位。
 
 
 ---
@@ -153,6 +161,58 @@
 | I4 | 清理接口一致性（契约测试补齐） | [x] | 2026-02-24 | VectorStore+Reranker+Evaluator边界测试+83测试全绿 |
 | I5 | 全链路 E2E 验收 | [x] | 2026-02-24 | 1198单元+30e2e通过,ingest/query/evaluate脚本验证 |
 
+#### 阶段 P1：生产 API、MCP HTTP Gateway 与限流模块
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| P1.1 | REST API app、health、query、document、collection、ingestion 路由 | [x] | 2026-07-11 | FastAPI factory + Pydantic schemas + core service facade |
+| P1.2 | RequestContext 与 JWT/local-dev 鉴权 | [x] | 2026-07-11 | 复用 `src/security/context.py`，补齐 transport 字段和 HS256 校验 |
+| P1.3 | 统一权限 service 与租户隔离 | [x] | 2026-07-11 | REST/MCP Gateway 共用 `PermissionService` |
+| P1.4 | 统一错误响应与 health live/ready | [x] | 2026-07-11 | request_id、error_code、retryable；ready 不调用真实 LLM |
+| P1.5 | 内存 per-tenant/per-user 限流、body limit、超时控制 | [x] | 2026-07-11 | Redis backend 预留接口；取消传播保持安全 |
+| P1.6 | MCP HTTP Gateway | [x] | 2026-07-11 | 复用 stdio `ProtocolHandler` tool schema，支持 JSON-RPC 与 tools/call |
+| P1.7 | API 配置与启动脚本 | [x] | 2026-07-11 | `config/settings*.yaml`、`scripts/start_api.py`、依赖清单 |
+| P1.8 | API 安全/一致性测试与文档 | [x] | 2026-07-11 | `tests/api` 6 项测试；不依赖 Redis、外部 API、真实 LLM |
+
+#### 阶段 P1-Parsing：OCR、Layout 和表格解析模块
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| P1-P.1 | ParsedDocument、Page、Block、Table、Image、Quality 模型 | [x] | 2026-07-11 | 保留既有 Document/Chunk 契约并提供 metadata 投影 |
+| P1-P.2 | BaseParser、BasicTextParser 与 ParserFactory | [x] | 2026-07-11 | PDF 增强 parser，其他格式保持原 Loader |
+| P1-P.3 | PdfParser 与 OCR fallback | [x] | 2026-07-11 | 低文本密度触发；缺依赖/低置信度可观测且可回退 |
+| P1-P.4 | Layout block、阅读顺序与图片坐标 | [x] | 2026-07-11 | heading/list/code/formula/caption/image 分类 |
+| P1-P.5 | 表格解析、单元格坐标与 Markdown 输出 | [x] | 2026-07-11 | native/fallback parser，跨页 continuation 标记 |
+| P1-P.6 | 页眉页脚检测与质量评分 | [x] | 2026-07-11 | 重复页眉、页码、乱码/空页/重复 block 指标 |
+| P1-P.7 | PdfLoader、Pipeline、Chunk metadata 与配置集成 | [x] | 2026-07-11 | enhanced_pdf 开关，旧路径兼容 |
+| P1-P.8 | Fixtures、parser 测试与开发文档 | [x] | 2026-07-11 | 离线 fake OCR；不依赖外部 API 或真实 OCR |
+
+#### 阶段 P1-Chunk：Chunk、Metadata 和 Contextual Retrieval 模块
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| P1-C.1 | ChunkMetadata canonical schema 与 legacy alias | [x] | 2026-07-11 | 统一身份、来源、结构定位、版本和 ACL 字段 |
+| P1-C.2 | Metadata normalize/validate/vector flatten | [x] | 2026-07-11 | 覆盖 chunk、upsert/vector、query return 边界 |
+| P1-C.3 | Chunk quality metrics 与 anomaly flags | [x] | 2026-07-11 | 规则指标、质量状态和表格/代码完整性标记 |
+| P1-C.4 | Section/table/code-aware strategies | [x] | 2026-07-11 | 保留标题层级、table_id 和 fenced code 边界 |
+| P1-C.5 | Parent-child retrieval helper | [x] | 2026-07-11 | 父块索引、上下文截取且不修改原对象 |
+| P1-C.6 | Contextualizer protocol 与 Noop/RuleBased | [x] | 2026-07-11 | 默认关闭，兼容既有 chunker factory |
+| P1-C.7 | LLM contextualizer cache/timeout/budget/fallback | [x] | 2026-07-11 | 注入式 callable，无外部 LLM 依赖 |
+| P1-C.8 | Chunk metadata/quality/contextual 测试与文档 | [x] | 2026-07-11 | 15 项离线单元测试；更新 README 与配置 |
+
+#### 阶段 P1-Retrieval：检索增强和生产向量后端预留模块
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| P1-R.1 | Retriever 与 RetrievalFilter 统一契约 | [x] | 2026-07-11 | tenant/document/source/version/tags/time/department |
+| P1-R.2 | Dense/Sparse/Hybrid 过滤与 ACL post-filter | [x] | 2026-07-11 | native filter + hydrated result 双重边界 |
+| P1-R.3 | Query rewrite adapters | [x] | 2026-07-11 | Noop/RuleBased/LLM，超时、预算和 fallback |
+| P1-R.4 | Domain tokenizer | [x] | 2026-07-11 | QueryProcessor/SparseEncoder 共用，保护企业术语 |
+| P1-R.5 | Score boosting 与可解释 reasons | [x] | 2026-07-11 | title/heading/tag/exact/source type，默认关闭 |
+| P1-R.6 | Qdrant/OpenSearch/PgVector provider placeholders | [x] | 2026-07-11 | 配置校验 + BaseVectorStore 占位，无外部客户端 |
+| P1-R.7 | Ablation latency/candidate/cost outputs | [x] | 2026-07-11 | P50/P95/P99、rerank latency、候选数和成本估算 |
+| P1-R.8 | 检索增强测试、配置与开发文档 | [x] | 2026-07-11 | 17 项离线单元测试；Chroma + SQLite FTS5 仍为默认 |
+
 ---
 
 ### 📈 总体进度
@@ -168,7 +228,11 @@
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| **总计** | **68** | **68** | **100%** |
+| 阶段 P1 | 8 | 8 | 100% |
+| 阶段 P1-Parsing | 8 | 8 | 100% |
+| 阶段 P1-Chunk | 8 | 8 | 100% |
+| 阶段 P1-Retrieval | 8 | 8 | 100% |
+| **总计** | **100** | **100** | **100%** |
 
 
 ---

@@ -18,8 +18,19 @@ except ImportError:
     # ChromaDB not installed, skip registration
     pass
 
+from src.libs.vector_store.qdrant_store import QdrantStore
+from src.libs.vector_store.opensearch_store import OpenSearchStore
+from src.libs.vector_store.pgvector_store import PgVectorStore
+
+VectorStoreFactory.register_provider("qdrant", QdrantStore)
+VectorStoreFactory.register_provider("opensearch", OpenSearchStore)
+VectorStoreFactory.register_provider("pgvector", PgVectorStore)
+
 __all__ = [
     'BaseVectorStore',
     'VectorStoreFactory',
     'ChromaStore',
+    'QdrantStore',
+    'OpenSearchStore',
+    'PgVectorStore',
 ]

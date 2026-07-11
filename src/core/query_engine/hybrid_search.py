@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from src.core.types import ProcessedQuery, RetrievalResult
+from src.core.query_engine.retrieval_filter import RetrievalFilter, validate_retrieval_filter
+from src.core.query_engine.query_rewriter import NoopQueryRewriter, QueryRewriter, RuleBasedQueryRewriter
+from src.core.query_engine.score_booster import ScoreBooster, ScoreBoostConfig
 from src.observability.redaction import redact_text
 from src.security.acl_filter import ACLFilter
 from src.security.context import RequestContext
@@ -147,6 +150,8 @@ class HybridSearch:
         sparse_retriever: Optional[SparseRetriever] = None,
         fusion: Optional[RRFFusion] = None,
         config: Optional[HybridSearchConfig] = None,
+        query_rewriter: Optional[QueryRewriter] = None,
+        score_booster: Optional[ScoreBooster] = None,
     ) -> None:
         """Initialize HybridSearch with components.
         
@@ -167,9 +172,12 @@ class HybridSearch:
         self.dense_retriever = dense_retriever
         self.sparse_retriever = sparse_retriever
         self.fusion = fusion
+        self.settings = settings
         
         # Extract config from settings or use provided/default
         self.config = config or self._extract_config(settings)
+        self.query_rewriter = query_rewriter or self._build_query_rewriter(settings)
+        self.score_booster = score_booster or self._build_score_booster(settings)
         
         logger.info(
             f"HybridSearch initialized: dense={self.dense_retriever is not None}, "
@@ -242,19 +250,41 @@ class HybridSearch:
         
         logger.debug(f"HybridSearch: query='{query[:50]}...', top_k={effective_top_k}")
         
+        retrieval_filter: Optional[RetrievalFilter] = None
+        legacy_filters = filters
+        if isinstance(filters, RetrievalFilter):
+            retrieval_filter = filters
+        elif isinstance(filters, dict) and any(key in RetrievalFilter.__dataclass_fields__ for key in filters):
+            retrieval_filter = validate_retrieval_filter(filters)
+            legacy_filters = retrieval_filter.to_metadata_filter()
+        if request_context is not None and retrieval_filter is not None:
+            retrieval_filter = retrieval_filter.merge_with_request_context(request_context)
+            legacy_filters = retrieval_filter.to_metadata_filter()
+
+        rewrite_result = self.query_rewriter.rewrite(query)
+        effective_query = rewrite_result.rewritten_query or query
+        if trace is not None and rewrite_result.rewrite_strategy != "noop":
+            trace.record_stage("query_rewrite", rewrite_result.__dict__, elapsed_ms=rewrite_result.latency_ms)
+
         # Step 1: Process query
         _t0 = time.monotonic()
-        processed_query = self._process_query(query)
+        generated_queries = list(dict.fromkeys(rewrite_result.generated_queries or [effective_query]))
+        # Keep dense retrieval single-query for cost control, while allowing
+        # sparse token extraction to benefit from simple multi-query expansion.
+        processed_query = self._process_query(" ".join(generated_queries))
+        processed_query.original_query = effective_query
+        processed_query.expanded_terms = generated_queries[1:]
         _elapsed = (time.monotonic() - _t0) * 1000.0
         if trace is not None:
             trace.record_stage("query_processing", {
                 "method": "query_processor",
                 "original_query": query,
+                "generated_queries": generated_queries,
                 "keywords": processed_query.keywords,
             }, elapsed_ms=_elapsed)
         
         # Merge explicit filters with query-extracted filters
-        merged_filters = self._merge_filters(processed_query.filters, filters)
+        merged_filters = self._merge_filters(processed_query.filters, legacy_filters)
         if request_context is not None:
             # Enforce the tenant boundary even when HybridSearch is called
             # directly rather than through query_knowledge_hub.
@@ -289,46 +319,46 @@ class HybridSearch:
                     "post_filter": True,
                     "potential_recall_loss": dense_acl.potential_recall_loss or sparse_acl.potential_recall_loss,
                 })
-        
+
+        if retrieval_filter is not None:
+            dense_results = [result for result in (dense_results or []) if retrieval_filter.matches(result.metadata)]
+            sparse_results = [result for result in (sparse_results or []) if retrieval_filter.matches(result.metadata)]
+
         # Step 3: Handle fallback scenarios
         used_fallback = False
         if dense_error and sparse_error:
-            # Both failed - raise error
             raise RuntimeError(
                 f"Both retrieval paths failed. "
                 f"Dense error: {dense_error}. Sparse error: {sparse_error}"
             )
-        elif dense_error:
-            # Dense failed, use sparse only
+        if dense_error:
             logger.warning(f"Dense retrieval failed, using sparse only: {dense_error}")
             used_fallback = True
             fused_results = sparse_results or []
         elif sparse_error:
-            # Sparse failed, use dense only
             logger.warning(f"Sparse retrieval failed, using dense only: {sparse_error}")
             used_fallback = True
             fused_results = dense_results or []
         elif not dense_results and not sparse_results:
-            # Both succeeded but returned empty
             fused_results = []
         else:
-            # Step 4: Fuse results
             fused_results = self._fuse_results(
                 dense_results=dense_results or [],
                 sparse_results=sparse_results or [],
                 top_k=effective_top_k,
                 trace=trace,
             )
-        
+
         # Step 5: Apply post-fusion metadata filters (if any)
         if merged_filters and self.config.metadata_filter_post:
             fused_results = self._apply_metadata_filters(fused_results, merged_filters)
-        
-        # Step 6: Limit to top_k
+        if retrieval_filter is not None:
+            fused_results = [result for result in fused_results if retrieval_filter.matches(result.metadata)]
+
+        fused_results = self.score_booster.apply(query, fused_results)
         final_results = fused_results[:effective_top_k]
-        
+
         logger.debug(f"HybridSearch: returning {len(final_results)} results")
-        
         if return_details:
             return HybridSearchResult(
                 results=final_results,
@@ -339,9 +369,37 @@ class HybridSearch:
                 used_fallback=used_fallback,
                 processed_query=processed_query,
             )
-        
         return final_results
-    
+
+    @staticmethod
+    def _build_query_rewriter(settings: Optional[Settings]) -> QueryRewriter:
+        retrieval = getattr(settings, "retrieval", None) if settings is not None else None
+        config = getattr(retrieval, "query_rewrite", {}) or {}
+        if isinstance(config, dict) and config.get("enabled") and config.get("provider") == "rule_based":
+            return RuleBasedQueryRewriter(
+                synonyms=config.get("synonyms", {}),
+                abbreviations=config.get("abbreviations", {}),
+                max_generated_queries=config.get("max_generated_queries", 3),
+            )
+        return NoopQueryRewriter()
+
+    @staticmethod
+    def _build_score_booster(settings: Optional[Settings]) -> ScoreBooster:
+        retrieval = getattr(settings, "retrieval", None) if settings is not None else None
+        config = getattr(retrieval, "boosting", {}) or {}
+        if not isinstance(config, dict):
+            return ScoreBooster()
+        return ScoreBooster(
+            ScoreBoostConfig(
+                enabled=bool(config.get("enabled", False)),
+                title_boost=float(config.get("title_boost", 1.20)),
+                heading_boost=float(config.get("heading_boost", 1.15)),
+                tag_boost=float(config.get("tag_boost", 1.10)),
+                exact_phrase_boost=float(config.get("exact_phrase_boost", 1.25)),
+                source_type_boost={str(key): float(value) for key, value in (config.get("source_type_boost", {}) or {}).items()},
+            )
+        )
+
     def _process_query(self, query: str) -> ProcessedQuery:
         """Process raw query using QueryProcessor.
         

@@ -339,6 +339,12 @@ class RetrievalResult:
     score: float
     text: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+    source: str = ""
+    document_id: str = ""
+    version_id: str = ""
+    page_number: Optional[int] = None
+    retrieval_route: str = ""
+    trace: Any = None
     
     def __post_init__(self):
         """Validate fields after initialization."""
@@ -346,6 +352,15 @@ class RetrievalResult:
             raise ValueError("chunk_id cannot be empty")
         if not isinstance(self.score, (int, float)):
             raise ValueError(f"score must be numeric, got {type(self.score).__name__}")
+        self.source = self.source or str(self.metadata.get("source_path", self.metadata.get("source", "")))
+        self.document_id = self.document_id or str(self.metadata.get("document_id", self.metadata.get("doc_id", "")))
+        self.version_id = self.version_id or str(self.metadata.get("version_id", ""))
+        if self.page_number is None:
+            page = self.metadata.get("page_number", self.metadata.get("page_start", self.metadata.get("page_num")))
+            try:
+                self.page_number = int(page) if page is not None else None
+            except (TypeError, ValueError):
+                self.page_number = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

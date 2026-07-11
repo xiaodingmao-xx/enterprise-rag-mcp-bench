@@ -12,11 +12,8 @@ Design Principles:
 
 from typing import List, Dict, Optional, Any
 from collections import Counter
-import re
-
-import jieba
-
 from src.core.types import Chunk
+from src.core.query_engine.tokenizer import DomainTokenizer, TokenizerConfig
 
 
 class SparseEncoder:
@@ -53,6 +50,7 @@ class SparseEncoder:
         self,
         min_term_length: int = 2,
         lowercase: bool = True,
+        tokenizer: Optional[DomainTokenizer] = None,
     ):
         """Initialize SparseEncoder.
         
@@ -68,6 +66,7 @@ class SparseEncoder:
         
         self.min_term_length = min_term_length
         self.lowercase = lowercase
+        self.tokenizer = tokenizer or DomainTokenizer(TokenizerConfig())
     
     def encode(
         self,
@@ -144,20 +143,7 @@ class SparseEncoder:
         Returns:
             List of valid terms
         """
-        tokens: List[str] = []
-
-        # Use jieba to segment the text (handles both Chinese and English)
-        raw_tokens = jieba.lcut(text)
-
-        # Clean tokens: keep only alphanumeric and Chinese characters
-        for token in raw_tokens:
-            token = token.strip()
-            if not token:
-                continue
-            # Skip pure punctuation / whitespace
-            if re.fullmatch(r'[\s\W]+', token, re.UNICODE):
-                continue
-            tokens.append(token)
+        tokens = self.tokenizer.tokenize(text)
         
         # Apply lowercase if configured
         if self.lowercase:
