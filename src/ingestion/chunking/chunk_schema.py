@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import re
 
 from src.core.types import Chunk, Document
+from src.ingestion.chunking.chunk_metadata import normalize_chunk_metadata
+from src.ingestion.chunking.metadata_validator import validate_chunk_metadata
 
 
 PageRange = Optional[Tuple[int, int]]
@@ -128,6 +130,7 @@ def sync_chunk_metadata(
         metadata["parsed_page_count"] = parsed_summary.get("page_count", 0)
     doc_images = metadata.pop("images", [])
     metadata.update(draft.metadata or {})
+    metadata.pop("_id_text", None)
 
     source_ref = draft.source_ref or document.id
     doc_id = draft.doc_id or document.id
@@ -206,8 +209,26 @@ def sync_chunk_metadata(
             "text": draft.text,
         }
     )
-
-    return metadata
+    normalized = normalize_chunk_metadata(metadata)
+    normalized.update(
+        {
+            "page_range": page_range_to_metadata(page_range),
+            "page_range_text": page_range_to_text(page_range),
+            "page_start": normalized.get("page_start") or (page_range[0] if page_range else None),
+            "page_end": normalized.get("page_end") or (page_range[1] if page_range else None),
+            "heading_path": heading_path,
+            "section_path": section_path,
+            "heading_path_text": " > ".join(heading_path),
+            "section_path_text": " > ".join(section_path),
+            "image_ids": image_refs,
+            "image_refs": image_refs,
+            "image_ids_text": ",".join(image_refs),
+            "table_ids": table_ids,
+            "table_ids_text": ",".join(table_ids),
+            "text": draft.text,
+        }
+    )
+    return validate_chunk_metadata(normalized, stage="chunk")
 
 
 def draft_to_chunk(

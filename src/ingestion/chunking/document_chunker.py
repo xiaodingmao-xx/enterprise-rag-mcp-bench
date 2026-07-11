@@ -28,6 +28,8 @@ from src.core.types import Chunk, Document
 from src.ingestion.chunking.chunk_id import generate_chunk_id, resolve_doc_hash
 from src.ingestion.chunking.chunk_schema import ChunkDraft, draft_to_chunk
 from src.ingestion.chunking.chunker_factory import ChunkerFactory
+from src.ingestion.chunking.chunk_quality import evaluate_chunk_quality
+from src.ingestion.chunking.config import get_chunking_settings, get_section
 from src.libs.splitter.splitter_factory import SplitterFactory
 
 if TYPE_CHECKING:
@@ -73,6 +75,7 @@ class DocumentChunker:
             ValueError: If splitter configuration is invalid or provider unknown
         """
         self._settings = settings
+        self._chunking_settings = get_chunking_settings(settings)
         self._splitter = None
         self._chunker = None
         try:
@@ -142,20 +145,29 @@ class DocumentChunker:
             text=document.text,
         )
         for index, draft in enumerate(drafts):
+            id_text = draft.metadata.get("_id_text", draft.text)
             chunk_id = draft.chunk_id or generate_chunk_id(
                 doc_hash=doc_hash,
-                text=draft.text,
+                text=id_text,
                 chunk_index=index,
                 page_range=draft.page_range,
                 section_path=draft.section_path,
                 heading_path=draft.heading_path,
             )
+            quality_config = get_section(self._chunking_settings, "quality")
             chunk = draft_to_chunk(
                 document=document,
                 draft=draft,
                 chunk_id=chunk_id,
                 chunk_index=index,
             )
+            if bool(quality_config.get("enabled", True)):
+                chunk.metadata["chunk_quality"] = evaluate_chunk_quality(
+                    chunk.text,
+                    chunk.metadata,
+                    sibling_texts=[item.text for item in chunks],
+                    config=quality_config,
+                )
             chunks.append(chunk)
         
         return chunks

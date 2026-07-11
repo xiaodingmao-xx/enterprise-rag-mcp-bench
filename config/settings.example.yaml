@@ -39,6 +39,19 @@ vector_store:
   provider: "chroma"
   persist_directory: "./data/db/chroma"
   collection_name: "knowledge_hub"
+  qdrant:
+    url: "${QDRANT_URL:-}"
+    api_key: "${QDRANT_API_KEY:-}"
+    collection_name: "knowledge_hub"
+  opensearch:
+    hosts: "${OPENSEARCH_HOSTS:-}"
+    username: "${OPENSEARCH_USERNAME:-}"
+    password: "${OPENSEARCH_PASSWORD:-}"
+    index_name: "knowledge_hub"
+  pgvector:
+    dsn: "${PGVECTOR_DSN:-}"
+    table_name: "rag_chunks"
+    embedding_dimension: 1536
 
 retrieval:
   dense_top_k: 20
@@ -52,6 +65,29 @@ retrieval:
     match_mode: "or"  # Options: or, and
     busy_timeout_ms: 10000
     max_retries: 3
+  query_rewrite:
+    enabled: false
+    provider: "noop"
+    timeout_seconds: 3
+    token_budget: 512
+    fallback_on_error: true
+    synonyms: {}
+    abbreviations: {}
+    max_generated_queries: 3
+  tokenizer:
+    engine: "jieba"
+    user_dict_path: "config/domain_terms.txt"
+    stopwords_path: "config/stopwords.txt"
+    enable_char_ngram: false
+    char_ngram_min: 2
+    char_ngram_max: 3
+  boosting:
+    enabled: false
+    title_boost: 1.20
+    heading_boost: 1.15
+    tag_boost: 1.10
+    exact_phrase_boost: 1.25
+    source_type_boost: {}
 
 rerank:
   enabled: false
@@ -232,6 +268,55 @@ ingestion:
         max_duplicate_block_ratio: 0.40
         reject_on_garbled: false
         warning_on_low_quality: true
+  chunking:
+    strategy: "recursive"
+    chunk_size: 1000
+    chunk_overlap: 200
+    metadata:
+      schema_validation: true
+      validate_before_chunk: true
+      validate_after_chunk: true
+      validate_before_upsert: true
+      validate_on_query_return: true
+      strict_upsert_validation: true
+    quality:
+      enabled: true
+      min_chars: 50
+      max_chars: 3000
+      max_garbled_ratio: 0.20
+      max_duplicate_ratio: 0.40
+      max_punctuation_ratio: 0.60
+      reject_invalid: false
+    section_aware:
+      enabled: true
+      max_section_chars: 3000
+      merge_short_sections: true
+    table_aware:
+      enabled: true
+      preserve_table_header: true
+      max_table_rows_per_chunk: 30
+    code_aware:
+      enabled: true
+      preserve_code_block: true
+      max_code_lines_per_chunk: 120
+    parent_child_retrieval:
+      enabled: true
+      return_parent_context: false
+      max_parent_context_chars: 2000
+    contextual_retrieval:
+      enabled: false
+      provider: "noop"
+      preserve_original_text: true
+      max_context_chars: 500
+      cache:
+        enabled: true
+        db_path: "./data/db/contextualizer_cache.db"
+      llm:
+        enabled: false
+        timeout_seconds: 20
+        token_budget: 512
+        fallback_on_error: true
+        max_estimated_cost_per_document: 0.10
   supported_extensions:
     - ".pdf"
     - ".md"

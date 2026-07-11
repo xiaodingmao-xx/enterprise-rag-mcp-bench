@@ -10,6 +10,10 @@ from src.ingestion.chunking.parent_child_chunker import ParentChildChunker
 from src.ingestion.chunking.recursive_chunker import RecursiveChunker
 from src.ingestion.chunking.semantic_chunker import SemanticChunker
 from src.ingestion.chunking.sliding_window_chunker import SlidingWindowChunker
+from src.ingestion.chunking.section_aware_chunker import SectionAwareChunker
+from src.ingestion.chunking.table_aware_chunker import TableAwareChunker
+from src.ingestion.chunking.code_aware_chunker import CodeAwareChunker
+from src.ingestion.chunking.contextual_chunker import ContextualChunker
 
 
 class ChunkerFactory:
@@ -21,6 +25,10 @@ class ChunkerFactory:
         "semantic": SemanticChunker,
         "parent_child": ParentChildChunker,
         "sliding_window": SlidingWindowChunker,
+        "section_aware": SectionAwareChunker,
+        "table_aware": TableAwareChunker,
+        "code_aware": CodeAwareChunker,
+        "contextual_chunk": ContextualChunker,
     }
 
     @classmethod

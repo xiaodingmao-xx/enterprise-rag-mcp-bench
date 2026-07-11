@@ -11,6 +11,15 @@ from src.ingestion.chunking.parent_child_chunker import ParentChildChunker
 from src.ingestion.chunking.recursive_chunker import RecursiveChunker
 from src.ingestion.chunking.semantic_chunker import SemanticChunker
 from src.ingestion.chunking.sliding_window_chunker import SlidingWindowChunker
+from src.ingestion.chunking.chunk_metadata import ChunkMetadata
+from src.ingestion.chunking.chunk_quality import evaluate_chunk_quality
+from src.ingestion.chunking.contextualizer import (
+    ChunkContextualizer,
+    LLMContextualizer,
+    NoopContextualizer,
+    RuleBasedContextualizer,
+)
+from src.ingestion.chunking.metadata_validator import validate_chunk_metadata
 
 __all__ = [
     "ChunkerFactory",
@@ -20,4 +29,11 @@ __all__ = [
     "RecursiveChunker",
     "SemanticChunker",
     "SlidingWindowChunker",
+    "ChunkMetadata",
+    "evaluate_chunk_quality",
+    "ChunkContextualizer",
+    "LLMContextualizer",
+    "NoopContextualizer",
+    "RuleBasedContextualizer",
+    "validate_chunk_metadata",
 ]

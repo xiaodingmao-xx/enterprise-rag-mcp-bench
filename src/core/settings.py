@@ -204,6 +204,9 @@ class VectorStoreSettings:
     provider: str
     persist_directory: str
     collection_name: str
+    qdrant: Dict[str, Any] = field(default_factory=dict)
+    opensearch: Dict[str, Any] = field(default_factory=dict)
+    pgvector: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -223,6 +226,9 @@ class RetrievalSettings:
     rrf_k: int
     sparse_backend: str = "json_bm25"
     fts5: FTS5Settings = field(default_factory=FTS5Settings)
+    query_rewrite: Dict[str, Any] = field(default_factory=dict)
+    tokenizer: Dict[str, Any] = field(default_factory=dict)
+    boosting: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -390,6 +396,13 @@ class ChunkingSettings:
     semantic: Dict[str, Any] = field(default_factory=dict)
     parent_child: Dict[str, Any] = field(default_factory=dict)
     sliding_window: Dict[str, Any] = field(default_factory=dict)
+    section_aware: Dict[str, Any] = field(default_factory=dict)
+    table_aware: Dict[str, Any] = field(default_factory=dict)
+    code_aware: Dict[str, Any] = field(default_factory=dict)
+    parent_child_retrieval: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    quality: Dict[str, Any] = field(default_factory=dict)
+    contextual_retrieval: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -505,6 +518,13 @@ class Settings:
                 semantic=_optional_mapping(chunking.get("semantic")),
                 parent_child=_optional_mapping(chunking.get("parent_child")),
                 sliding_window=_optional_mapping(chunking.get("sliding_window")),
+                section_aware=_optional_mapping(chunking.get("section_aware")),
+                table_aware=_optional_mapping(chunking.get("table_aware")),
+                code_aware=_optional_mapping(chunking.get("code_aware")),
+                parent_child_retrieval=_optional_mapping(chunking.get("parent_child_retrieval")),
+                metadata=_optional_mapping(chunking.get("metadata")),
+                quality=_optional_mapping(chunking.get("quality")),
+                contextual_retrieval=_optional_mapping(chunking.get("contextual_retrieval")),
             )
             ingestion_settings = IngestionSettings(
                 chunk_size=legacy_chunk_size,
@@ -830,6 +850,9 @@ class Settings:
                 provider=_require_str(vector_store, "provider", "vector_store"),
                 persist_directory=_require_str(vector_store, "persist_directory", "vector_store"),
                 collection_name=_require_str(vector_store, "collection_name", "vector_store"),
+                qdrant=_optional_mapping(vector_store.get("qdrant")),
+                opensearch=_optional_mapping(vector_store.get("opensearch")),
+                pgvector=_optional_mapping(vector_store.get("pgvector")),
             ),
             retrieval=RetrievalSettings(
                 dense_top_k=_require_int(retrieval, "dense_top_k", "retrieval"),
@@ -867,6 +890,9 @@ class Settings:
                         0,
                     ),
                 ),
+                query_rewrite=_optional_mapping(retrieval.get("query_rewrite")),
+                tokenizer=_optional_mapping(retrieval.get("tokenizer")),
+                boosting=_optional_mapping(retrieval.get("boosting")),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),

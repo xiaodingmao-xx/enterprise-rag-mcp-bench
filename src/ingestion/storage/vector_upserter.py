@@ -15,11 +15,13 @@ Design Principles:
 """
 
 import hashlib
-from typing import List, Dict, Any, Optional
+from typing import List, Any, Optional
 
 from src.core.types import Chunk
 from src.core.settings import Settings
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
+from src.libs.vector_store.base_vector_store import BaseVectorStore
+from src.ingestion.chunking.metadata_validator import validate_chunk_metadata
 
 
 class VectorUpserter:
@@ -115,13 +117,22 @@ class VectorUpserter:
             chunk_id = self._generate_chunk_id(chunk)
             content_hash = self._get_content_hash(chunk)
             chunk_ids.append(chunk_id)
+            vector_metadata = validate_chunk_metadata(
+                {**chunk.metadata, "chunk_id": chunk_id, "content_hash": content_hash},
+                stage="upsert",
+            )
             
             # Build storage record
+            storage_metadata = vector_metadata if isinstance(self.vector_store, BaseVectorStore) else {
+                **chunk.metadata,
+                "chunk_id": chunk_id,
+                "content_hash": content_hash,
+            }
             record = {
                 "id": chunk_id,
                 "vector": vector,
                 "metadata": {
-                    **chunk.metadata,  # Preserve all original metadata
+                    **storage_metadata,
                     "text": chunk.text,  # Store text for retrieval
                     "chunk_id": chunk_id,  # Redundant but useful for queries
                     "content_hash": content_hash,
